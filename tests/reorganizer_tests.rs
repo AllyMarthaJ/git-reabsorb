@@ -16,6 +16,9 @@ struct TestRepo {
 impl TestRepo {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("git-scramble-test-{}", uuid()));
+        if path.exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
         fs::create_dir_all(&path).expect("Failed to create temp dir");
 
         // Initialize git repo with main as default branch
@@ -46,11 +49,7 @@ impl TestRepo {
         self.git.get_head().expect("Failed to get HEAD")
     }
 
-    fn read_commits(
-        &self,
-        base: &str,
-        head: &str,
-    ) -> Vec<git_scramble::models::SourceCommit> {
+    fn read_commits(&self, base: &str, head: &str) -> Vec<git_scramble::models::SourceCommit> {
         self.git
             .read_commits(base, head)
             .expect("Failed to read commits")
@@ -911,9 +910,18 @@ fn test_get_new_files_in_nested_directories() {
     let _base = repo.commit("Initial commit");
 
     // Add files in deeply nested directories
-    repo.write_file("src/components/ui/Button.tsx", "export const Button = () => {};\n");
-    repo.write_file("src/components/ui/Input.tsx", "export const Input = () => {};\n");
-    repo.write_file("src/utils/helpers/string.ts", "export const trim = (s: string) => s.trim();\n");
+    repo.write_file(
+        "src/components/ui/Button.tsx",
+        "export const Button = () => {};\n",
+    );
+    repo.write_file(
+        "src/components/ui/Input.tsx",
+        "export const Input = () => {};\n",
+    );
+    repo.write_file(
+        "src/utils/helpers/string.ts",
+        "export const trim = (s: string) => s.trim();\n",
+    );
     repo.stage_all();
     let commit_sha = repo.commit("Add nested files");
 
@@ -951,7 +959,10 @@ fn test_working_tree_diff_after_reset_shows_modified_files() {
     let diff = repo.git.get_working_tree_diff().unwrap();
     assert!(diff.contains("README.md"), "Should show modified README.md");
     assert!(diff.contains("src/main.rs"), "Should show modified main.rs");
-    assert!(diff.contains("println!(\"hello\")"), "Should show the new content");
+    assert!(
+        diff.contains("println!(\"hello\")"),
+        "Should show the new content"
+    );
 }
 
 #[test]
@@ -977,8 +988,10 @@ fn test_working_tree_diff_does_not_show_new_untracked_files() {
 
     // The diff should be empty or not contain the new file
     // (this is WHY we need separate new file tracking)
-    assert!(!diff.contains("new_file.rs"),
-        "Untracked files should NOT appear in git diff HEAD - this is why we track them separately");
+    assert!(
+        !diff.contains("new_file.rs"),
+        "Untracked files should NOT appear in git diff HEAD - this is why we track them separately"
+    );
 }
 
 #[test]
@@ -991,7 +1004,10 @@ fn test_working_tree_diff_shows_modifications() {
     let base = repo.commit("Initial commit");
 
     // Modify the file
-    repo.write_file("src/main.rs", "fn main() {\n    println!(\"modified\");\n}\n");
+    repo.write_file(
+        "src/main.rs",
+        "fn main() {\n    println!(\"modified\");\n}\n",
+    );
     repo.stage_all();
     repo.commit("Modify main.rs");
 
@@ -1064,7 +1080,11 @@ fn helper_two() {
     // Apply all hunks together
     let hunk_refs: Vec<&Hunk> = hunks.iter().collect();
     let result = repo.git.apply_hunks_to_index(&hunk_refs);
-    assert!(result.is_ok(), "Multiple hunks should apply cleanly: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Multiple hunks should apply cleanly: {:?}",
+        result
+    );
 
     // Commit to verify everything staged correctly
     let sha = repo.git.commit("Test commit", false).unwrap();
@@ -1287,7 +1307,10 @@ fn test_commit_with_no_verify() {
 
     // With no_verify, commit should succeed
     let result_with = repo.git.commit("Should succeed", true);
-    assert!(result_with.is_ok(), "Commit with --no-verify should skip hooks");
+    assert!(
+        result_with.is_ok(),
+        "Commit with --no-verify should skip hooks"
+    );
 }
 
 // ============================================================================
@@ -1304,7 +1327,10 @@ fn test_apply_single_hunk_to_index() {
     let base = repo.commit("Initial commit");
 
     // Modify the file
-    repo.write_file("src/main.rs", "fn main() {\n    println!(\"modified\");\n}\n");
+    repo.write_file(
+        "src/main.rs",
+        "fn main() {\n    println!(\"modified\");\n}\n",
+    );
     repo.stage_all();
     repo.commit("Modify");
 
@@ -1649,10 +1675,7 @@ fn test_plan_stores_file_mappings() {
     );
 
     assert_eq!(restored_new_files.len(), 1);
-    assert_eq!(
-        restored_new_files.get("src/main.rs"),
-        Some(&vec![head])
-    );
+    assert_eq!(restored_new_files.get("src/main.rs"), Some(&vec![head]));
 
     // Clean up
     delete_plan().unwrap();

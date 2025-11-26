@@ -178,7 +178,11 @@ That's it!"#;
         assert_eq!(plan.commits.len(), 1);
     }
 
-    fn make_llm_commit(short: &str, long: &str, changes: Vec<ChangeSpec>) -> super::super::types::LlmCommit {
+    fn make_llm_commit(
+        short: &str,
+        long: &str,
+        changes: Vec<ChangeSpec>,
+    ) -> super::super::types::LlmCommit {
         super::super::types::LlmCommit {
             description: crate::models::CommitDescription::new(short, long),
             changes,
@@ -244,7 +248,11 @@ That's it!"#;
         let result = validate_plan(&plan, &hunks);
         assert!(matches!(result, Err(LlmError::ValidationError(_))));
         if let Err(LlmError::ValidationError(msg)) = result {
-            assert!(msg.contains("not assigned"), "Error should mention unassigned hunks: {}", msg);
+            assert!(
+                msg.contains("not assigned"),
+                "Error should mention unassigned hunks: {}",
+                msg
+            );
         }
     }
 }

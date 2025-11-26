@@ -34,11 +34,7 @@ impl Reorganizer for GroupByFile {
                 .unwrap_or_else(|| file_path.to_string_lossy().to_string());
 
             let short = format!("Update {}", file_name);
-            let long = format!(
-                "Update {}\n\nChanges to {}",
-                file_name,
-                file_path.display()
-            );
+            let long = format!("Update {}\n\nChanges to {}", file_name, file_path.display());
 
             planned.push(PlannedCommit::from_hunk_ids(
                 CommitDescription::new(short, long),

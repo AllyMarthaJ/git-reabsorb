@@ -1,8 +1,9 @@
 //! Plan file storage for resumable reorganization
 
 use std::collections::HashMap;
+use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -95,8 +96,14 @@ impl SavedPlan {
             next_commit_index: 0,
             new_hunks: new_hunks.iter().map(SavedHunk::from).collect(),
             working_tree_hunks: working_tree_hunks.iter().map(SavedHunk::from).collect(),
-            file_to_commits: file_to_commits.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            new_files_to_commits: new_files_to_commits.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            file_to_commits: file_to_commits
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            new_files_to_commits: new_files_to_commits
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 
@@ -104,13 +111,23 @@ impl SavedPlan {
         self.commits
             .iter()
             .map(|sc| {
-                let changes = sc.changes.iter().map(|c| match c {
-                    SavedChange::ExistingHunk { id } => PlannedChange::ExistingHunk(HunkId(*id)),
-                    SavedChange::NewHunk { id } => {
-                        let saved = self.new_hunks.iter().find(|h| h.id == *id).expect("new hunk missing");
-                        PlannedChange::NewHunk(Hunk::from(saved))
-                    }
-                }).collect();
+                let changes = sc
+                    .changes
+                    .iter()
+                    .map(|c| match c {
+                        SavedChange::ExistingHunk { id } => {
+                            PlannedChange::ExistingHunk(HunkId(*id))
+                        }
+                        SavedChange::NewHunk { id } => {
+                            let saved = self
+                                .new_hunks
+                                .iter()
+                                .find(|h| h.id == *id)
+                                .expect("new hunk missing");
+                            PlannedChange::NewHunk(Hunk::from(saved))
+                        }
+                    })
+                    .collect();
                 PlannedCommit::new(sc.description.clone(), changes)
             })
             .collect()
@@ -148,10 +165,14 @@ impl From<&PlannedCommit> for SavedCommit {
     fn from(pc: &PlannedCommit) -> Self {
         Self {
             description: pc.description.clone(),
-            changes: pc.changes.iter().map(|c| match c {
-                PlannedChange::ExistingHunk(id) => SavedChange::ExistingHunk { id: id.0 },
-                PlannedChange::NewHunk(h) => SavedChange::NewHunk { id: h.id.0 },
-            }).collect(),
+            changes: pc
+                .changes
+                .iter()
+                .map(|c| match c {
+                    PlannedChange::ExistingHunk(id) => SavedChange::ExistingHunk { id: id.0 },
+                    PlannedChange::NewHunk(h) => SavedChange::NewHunk { id: h.id.0 },
+                })
+                .collect(),
             created_sha: None,
         }
     }
@@ -207,39 +228,74 @@ impl From<&SavedDiffLine> for DiffLine {
     }
 }
 
+fn candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(dir) = env::var("GIT_SCRAMBLE_PLAN_DIR") {
+        if !dir.is_empty() {
+            dirs.push(PathBuf::from(dir));
+        }
+    }
+    dirs.push(PathBuf::from(SCRAMBLE_DIR));
+    dirs.push(PathBuf::from(".git-scramble"));
+    dirs
+}
+
+fn existing_plan_path() -> Option<PathBuf> {
+    for dir in candidate_dirs() {
+        let path = dir.join(PLAN_FILE);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 pub fn plan_file_path() -> PathBuf {
-    PathBuf::from(SCRAMBLE_DIR).join(PLAN_FILE)
+    existing_plan_path().unwrap_or_else(|| PathBuf::from(SCRAMBLE_DIR).join(PLAN_FILE))
 }
 
 pub fn save_plan(plan: &SavedPlan) -> Result<PathBuf, PlanFileError> {
-    let dir = Path::new(SCRAMBLE_DIR);
-    if !dir.exists() {
-        fs::create_dir_all(dir)?;
+    let json =
+        serde_json::to_string_pretty(plan).map_err(|e| PlanFileError::Json(e.to_string()))?;
+    let mut last_err: Option<std::io::Error> = None;
+
+    for dir in candidate_dirs() {
+        if let Err(e) = fs::create_dir_all(&dir) {
+            last_err = Some(e);
+            continue;
+        }
+        let path = dir.join(PLAN_FILE);
+        match fs::write(&path, &json) {
+            Ok(_) => return Ok(path),
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        }
     }
-    let path = plan_file_path();
-    let json = serde_json::to_string_pretty(plan)
-        .map_err(|e| PlanFileError::Json(e.to_string()))?;
-    fs::write(&path, json)?;
-    Ok(path)
+
+    Err(PlanFileError::Io(last_err.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "Failed to save plan")
+    })))
 }
 
 pub fn load_plan() -> Result<SavedPlan, PlanFileError> {
-    let path = plan_file_path();
-    if !path.exists() {
-        return Err(PlanFileError::NoPlan);
+    if let Some(path) = existing_plan_path() {
+        let json = fs::read_to_string(&path)?;
+        return serde_json::from_str(&json).map_err(|e| PlanFileError::Json(e.to_string()));
     }
-    let json = fs::read_to_string(&path)?;
-    serde_json::from_str(&json).map_err(|e| PlanFileError::Json(e.to_string()))
+    Err(PlanFileError::NoPlan)
 }
 
 pub fn has_saved_plan() -> bool {
-    plan_file_path().exists()
+    existing_plan_path().is_some()
 }
 
 pub fn delete_plan() -> Result<(), PlanFileError> {
-    let path = plan_file_path();
-    if path.exists() {
-        fs::remove_file(&path)?;
+    if let Some(path) = existing_plan_path() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
     }
     Ok(())
 }
@@ -256,7 +312,10 @@ mod tests {
             old_count: 2,
             new_start: 1,
             new_count: 3,
-            lines: vec![DiffLine::Context("ctx".into()), DiffLine::Added("add".into())],
+            lines: vec![
+                DiffLine::Context("ctx".into()),
+                DiffLine::Added("add".into()),
+            ],
             likely_source_commits: vec!["abc".into()],
         }
     }
@@ -266,12 +325,21 @@ mod tests {
         let hunk = test_hunk();
         let planned = vec![PlannedCommit::new(
             CommitDescription::new("Test", "desc"),
-            vec![PlannedChange::ExistingHunk(HunkId(0)), PlannedChange::NewHunk(hunk.clone())],
+            vec![
+                PlannedChange::ExistingHunk(HunkId(0)),
+                PlannedChange::NewHunk(hunk.clone()),
+            ],
         )];
 
         let saved = SavedPlan::new(
-            "preserve".into(), "base".into(), "head".into(),
-            &planned, &[hunk.clone()], &[hunk], &HashMap::new(), &HashMap::new(),
+            "preserve".into(),
+            "base".into(),
+            "head".into(),
+            &planned,
+            &[hunk.clone()],
+            &[hunk],
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let restored = saved.to_planned_commits();

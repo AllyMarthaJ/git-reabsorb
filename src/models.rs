@@ -183,7 +183,10 @@ impl PlannedCommit {
     pub fn from_hunk_ids(description: CommitDescription, hunk_ids: Vec<HunkId>) -> Self {
         Self {
             description,
-            changes: hunk_ids.into_iter().map(PlannedChange::ExistingHunk).collect(),
+            changes: hunk_ids
+                .into_iter()
+                .map(PlannedChange::ExistingHunk)
+                .collect(),
         }
     }
 }

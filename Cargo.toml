@@ -7,7 +7,7 @@ license = "MIT"
 
 [[bin]]
 name = "git-scramble"
-path = "src/main.rs"
+path = "src/bin/git-scramble.rs"
 
 [dependencies]
 thiserror = "1.0"

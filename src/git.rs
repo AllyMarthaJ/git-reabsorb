@@ -213,20 +213,30 @@ impl GitOps for Git {
     }
 
     fn get_files_changed_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError> {
-        let output = self.run_git(&["diff-tree", "--no-commit-id", "--name-only", "-r", commit_sha])?;
+        let output = self.run_git(&[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            commit_sha,
+        ])?;
         Ok(output.lines().map(|s| s.to_string()).collect())
     }
 
     fn get_new_files_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError> {
         // Use --name-status to get status codes (A = added, M = modified, D = deleted)
-        let output = self.run_git(&["diff-tree", "--no-commit-id", "--name-status", "-r", commit_sha])?;
+        let output = self.run_git(&[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            commit_sha,
+        ])?;
 
         // Filter for lines starting with "A\t" (added files)
         let new_files = output
             .lines()
-            .filter_map(|line| {
-                line.strip_prefix("A\t").map(String::from)
-            })
+            .filter_map(|line| line.strip_prefix("A\t").map(String::from))
             .collect();
 
         Ok(new_files)

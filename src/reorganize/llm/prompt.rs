@@ -110,15 +110,9 @@ Each change in a commit can be one of:
     prompt.push_str("## Hunks to Reorganize\n\n");
 
     for hunk in &context.hunks {
-        prompt.push_str(&format!(
-            "### Hunk {} - {}\n",
-            hunk.id, hunk.file_path
-        ));
+        prompt.push_str(&format!("### Hunk {} - {}\n", hunk.id, hunk.file_path));
         if let Some(ref sha) = hunk.source_commit_sha {
-            prompt.push_str(&format!(
-                "From commit: {}\n",
-                &sha[..8.min(sha.len())]
-            ));
+            prompt.push_str(&format!("From commit: {}\n", &sha[..8.min(sha.len())]));
         }
         prompt.push_str(&format!(
             "Lines: old @{}, new @{}\n```diff\n{}\n```\n\n",

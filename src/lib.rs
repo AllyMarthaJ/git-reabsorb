@@ -30,8 +30,12 @@
 //! let planned = reorganizer.reorganize(&commits, &hunks)?;
 //! ```
 
+pub mod app;
+pub mod cli;
 pub mod diff_parser;
 pub mod editor;
 pub mod git;
 pub mod models;
+pub mod plan_store;
 pub mod reorganize;
+pub mod services;

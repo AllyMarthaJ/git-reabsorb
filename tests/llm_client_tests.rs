@@ -168,9 +168,7 @@ fn test_claude_cli_modes() {
     for args in test_cases {
         println!("\n=== Testing: claude {} ===", args.join(" "));
 
-        let output = Command::new("claude")
-            .args(&args)
-            .output();
+        let output = Command::new("claude").args(&args).output();
 
         match output {
             Ok(out) => {
