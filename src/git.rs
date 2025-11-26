@@ -169,6 +169,7 @@ impl GitOps for Git {
 
     fn read_commits(&self, base: &str, head: &str) -> Result<Vec<SourceCommit>, GitError> {
         // Get commit SHAs in range (oldest first)
+        // Note: base..head is exclusive of base (merge-base is not included)
         let range = format!("{}..{}", base, head);
         let output = self.run_git(&["rev-list", "--reverse", &range])?;
 

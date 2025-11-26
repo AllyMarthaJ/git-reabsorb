@@ -24,8 +24,8 @@ struct Cli {
     #[arg(value_name = "RANGE", conflicts_with_all = ["reset", "base"])]
     range: Option<String>,
 
-    /// Base branch to scramble from (finds merge-base with HEAD)
-    /// Examples: main, develop, origin/main
+    /// Base branch to scramble from (uses tip of branch)
+    /// Examples: main, develop, origin/main, feat/my-feature
     #[arg(short, long, conflicts_with_all = ["reset", "range"])]
     base: Option<String>,
 
@@ -323,8 +323,9 @@ fn parse_range<G: GitOps>(
             Ok((base, head))
         }
         // Base branch specified (e.g., "--base develop")
+        // Use the tip of the branch directly, not merge-base
         (None, Some(branch)) => {
-            let base = git.find_merge_base(branch)?;
+            let base = git.resolve_ref(branch)?;
             let head = git.get_head()?;
             Ok((base, head))
         }

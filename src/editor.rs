@@ -88,10 +88,9 @@ impl Editor for SystemEditor {
 
         temp_file.flush()?;
 
-        let temp_path = temp_file.path().to_path_buf();
-
-        // Open editor - need to keep temp_file alive but release the write handle
-        drop(temp_file);
+        // Keep the file on disk but get ownership of the path
+        // (NamedTempFile deletes on drop, so we use into_temp_path instead)
+        let temp_path = temp_file.into_temp_path();
 
         // Parse editor command (might have args like "code --wait")
         let mut parts = editor.split_whitespace();
@@ -114,8 +113,7 @@ impl Editor for SystemEditor {
         // Read back the edited content
         let content = fs::read_to_string(&temp_path)?;
 
-        // Clean up temp file
-        let _ = fs::remove_file(&temp_path);
+        // temp_path is dropped here, which deletes the file
 
         // Strip comment lines and trailing whitespace
         let cleaned = strip_comments(&content);
