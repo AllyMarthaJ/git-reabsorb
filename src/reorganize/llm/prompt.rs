@@ -88,7 +88,7 @@ Each change in a commit can be one of:
 1. Group related changes together into logical commits
 2. Each commit should represent a single logical change (feature, fix, refactor, etc.)
 3. Write clear, descriptive commit messages
-4. Prefer smaller, focused commits over large ones
+4. Explain _why_ the change was necessitated in the long description
 5. Consider file relationships and dependencies when grouping
 6. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
 7. You may split hunks using "partial" if a hunk contains unrelated changes

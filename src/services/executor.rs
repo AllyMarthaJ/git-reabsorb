@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::editor::Editor;
 use crate::editor::EditorError;
 use crate::git::{GitError, GitOps};
-use crate::models::{Hunk, PlannedCommit};
+use crate::models::{CommitDescription, Hunk, PlannedCommit};
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 
 #[derive(Debug, thiserror::Error)]
@@ -68,7 +68,8 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
                 .collect();
 
             let help_text = generate_commit_help(&commit_hunk_refs, &new_files);
-            let message = self.editor.edit(&planned.description.long, &help_text)?;
+            let template = commit_message_template(&planned.description);
+            let message = self.editor.edit(&template, &help_text)?;
 
             self.git.apply_hunks_to_index(&commit_hunk_refs)?;
 
@@ -150,4 +151,45 @@ fn generate_commit_help(hunks: &[&Hunk], new_files: &[&String]) -> String {
 
 fn short_sha(sha: &str) -> &str {
     &sha[..8.min(sha.len())]
+}
+
+fn commit_message_template(desc: &CommitDescription) -> String {
+    let short = desc.short.trim();
+    let long = desc.long.trim();
+
+    if long.is_empty() || long == short {
+        return short.to_string();
+    }
+
+    if desc.long.starts_with(short) {
+        return desc.long.clone();
+    }
+
+    format!("{}\n\n{}", short, long)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn template_short_only() {
+        let desc = CommitDescription::short_only("fix bug");
+        assert_eq!(commit_message_template(&desc), "fix bug");
+    }
+
+    #[test]
+    fn template_short_and_body() {
+        let desc = CommitDescription::new("feat", "add feature details");
+        assert_eq!(
+            commit_message_template(&desc),
+            "feat\n\nadd feature details"
+        );
+    }
+
+    #[test]
+    fn template_when_long_contains_short() {
+        let desc = CommitDescription::new("feat", "feat\n\nadd more");
+        assert_eq!(commit_message_template(&desc), "feat\n\nadd more");
+    }
 }
