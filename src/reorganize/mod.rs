@@ -1,8 +1,10 @@
 mod by_file;
+pub mod llm;
 mod preserve;
 mod squash;
 
 pub use by_file::GroupByFile;
+pub use llm::LlmReorganizer;
 pub use preserve::PreserveOriginal;
 pub use squash::Squash;
 
@@ -15,6 +17,8 @@ pub enum ReorganizeError {
     NoHunks,
     #[error("Reorganization failed: {0}")]
     Failed(String),
+    #[error("Invalid plan: {0}")]
+    InvalidPlan(String),
 }
 
 /// Trait for reorganizing hunks into planned commits

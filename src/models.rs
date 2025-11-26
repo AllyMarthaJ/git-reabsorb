@@ -105,11 +105,13 @@ impl Hunk {
 }
 
 /// A commit description with short and long forms
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitDescription {
     /// First line of the commit message
+    #[serde(alias = "short_description")]
     pub short: String,
     /// Full commit message (including the first line)
+    #[serde(alias = "long_description")]
     pub long: String,
 }
 
@@ -131,18 +133,57 @@ impl CommitDescription {
     }
 }
 
+/// A change to include in a planned commit
+#[derive(Debug, Clone)]
+pub enum PlannedChange {
+    /// Reference to an existing hunk by ID
+    ExistingHunk(HunkId),
+    /// A new hunk (from splitting/merging/LLM generation)
+    NewHunk(Hunk),
+}
+
+impl PlannedChange {
+    /// Get the file path for this change
+    #[must_use]
+    pub fn file_path(&self) -> &std::path::Path {
+        match self {
+            PlannedChange::ExistingHunk(_) => {
+                panic!("file_path() called on ExistingHunk - resolve first")
+            }
+            PlannedChange::NewHunk(hunk) => &hunk.file_path,
+        }
+    }
+
+    /// Resolve this change to a concrete Hunk
+    #[must_use]
+    pub fn resolve<'a>(&'a self, hunks: &'a [Hunk]) -> Option<&'a Hunk> {
+        match self {
+            PlannedChange::ExistingHunk(id) => hunks.iter().find(|h| h.id == *id),
+            PlannedChange::NewHunk(hunk) => Some(hunk),
+        }
+    }
+}
+
 /// A planned commit - the output of reorganization
 #[derive(Debug, Clone)]
 pub struct PlannedCommit {
     pub description: CommitDescription,
-    pub hunk_ids: Vec<HunkId>,
+    pub changes: Vec<PlannedChange>,
 }
 
 impl PlannedCommit {
-    pub fn new(description: CommitDescription, hunk_ids: Vec<HunkId>) -> Self {
+    pub fn new(description: CommitDescription, changes: Vec<PlannedChange>) -> Self {
         Self {
             description,
-            hunk_ids,
+            changes,
+        }
+    }
+
+    /// Create a PlannedCommit from hunk IDs (convenience for existing reorganizers)
+    pub fn from_hunk_ids(description: CommitDescription, hunk_ids: Vec<HunkId>) -> Self {
+        Self {
+            description,
+            changes: hunk_ids.into_iter().map(PlannedChange::ExistingHunk).collect(),
         }
     }
 }
@@ -254,16 +295,36 @@ mod tests {
     }
 
     #[test]
-    fn test_planned_commit_new() {
+    fn test_planned_commit_from_hunk_ids() {
         let desc = CommitDescription::short_only("Test commit");
         let hunk_ids = vec![HunkId(0), HunkId(1), HunkId(2)];
-        let commit = PlannedCommit::new(desc, hunk_ids);
+        let commit = PlannedCommit::from_hunk_ids(desc, hunk_ids);
 
         assert_eq!(commit.description.short, "Test commit");
-        assert_eq!(commit.hunk_ids.len(), 3);
-        assert_eq!(commit.hunk_ids[0].0, 0);
-        assert_eq!(commit.hunk_ids[1].0, 1);
-        assert_eq!(commit.hunk_ids[2].0, 2);
+        assert_eq!(commit.changes.len(), 3);
+
+        // Verify they're all ExistingHunk variants
+        for (i, change) in commit.changes.iter().enumerate() {
+            match change {
+                PlannedChange::ExistingHunk(id) => assert_eq!(id.0, i),
+                PlannedChange::NewHunk(_) => panic!("Expected ExistingHunk"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_planned_commit_with_new_hunk() {
+        let desc = CommitDescription::short_only("Test commit");
+        let new_hunk = make_test_hunk();
+        let changes = vec![
+            PlannedChange::ExistingHunk(HunkId(5)),
+            PlannedChange::NewHunk(new_hunk),
+        ];
+        let commit = PlannedCommit::new(desc, changes);
+
+        assert_eq!(commit.changes.len(), 2);
+        assert!(matches!(&commit.changes[0], PlannedChange::ExistingHunk(id) if id.0 == 5));
+        assert!(matches!(&commit.changes[1], PlannedChange::NewHunk(_)));
     }
 
     #[test]

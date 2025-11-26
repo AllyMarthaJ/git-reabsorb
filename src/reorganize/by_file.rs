@@ -42,7 +42,7 @@ impl Reorganizer for GroupByFile {
                 file_path.display()
             );
 
-            planned.push(PlannedCommit::new(
+            planned.push(PlannedCommit::from_hunk_ids(
                 CommitDescription::new(short, long),
                 hunk_ids,
             ));
@@ -99,6 +99,6 @@ mod tests {
             .iter()
             .find(|p| p.description.short.contains("main.rs"))
             .unwrap();
-        assert_eq!(main_commit.hunk_ids.len(), 2);
+        assert_eq!(main_commit.changes.len(), 2);
     }
 }

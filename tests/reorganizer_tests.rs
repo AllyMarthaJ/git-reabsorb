@@ -141,7 +141,7 @@ fn test_preserve_original_single_commit() {
     // Should have exactly 1 planned commit
     assert_eq!(planned.len(), 1);
     assert_eq!(planned[0].description.short, "Add main.rs");
-    assert_eq!(planned[0].hunk_ids.len(), 1);
+    assert_eq!(planned[0].changes.len(), 1);
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn test_preserve_original_commit_with_multiple_files() {
 
     // Should have 1 commit with all 3 hunks
     assert_eq!(planned.len(), 1);
-    assert_eq!(planned[0].hunk_ids.len(), 3);
+    assert_eq!(planned[0].changes.len(), 3);
 }
 
 // ============================================================================
@@ -275,7 +275,7 @@ fn test_group_by_file_multiple_files_single_commit() {
 
     // Each commit should have exactly 1 hunk
     for commit in &planned {
-        assert_eq!(commit.hunk_ids.len(), 1);
+        assert_eq!(commit.changes.len(), 1);
     }
 }
 
@@ -318,7 +318,7 @@ fn test_group_by_file_same_file_multiple_commits() {
 
     // Should have 1 commit with all hunks for main.rs
     assert_eq!(planned.len(), 1);
-    assert_eq!(planned[0].hunk_ids.len(), 3);
+    assert_eq!(planned[0].changes.len(), 3);
     assert!(planned[0].description.short.contains("main.rs"));
 }
 
@@ -368,14 +368,14 @@ fn test_group_by_file_interleaved_changes() {
         .iter()
         .find(|c| c.description.short.contains("main.rs"))
         .expect("Should have main.rs commit");
-    assert_eq!(main_commit.hunk_ids.len(), 2);
+    assert_eq!(main_commit.changes.len(), 2);
 
     // Find lib.rs commit
     let lib_commit = planned
         .iter()
         .find(|c| c.description.short.contains("lib.rs"))
         .expect("Should have lib.rs commit");
-    assert_eq!(lib_commit.hunk_ids.len(), 2);
+    assert_eq!(lib_commit.changes.len(), 2);
 }
 
 // ============================================================================
@@ -443,7 +443,7 @@ fn test_squash_multiple_commits() {
 
     // Should have exactly 1 commit with all hunks
     assert_eq!(planned.len(), 1);
-    assert_eq!(planned[0].hunk_ids.len(), 3);
+    assert_eq!(planned[0].changes.len(), 3);
     assert!(planned[0].description.short.contains("Squashed"));
     assert!(planned[0].description.long.contains("Add main.rs"));
     assert!(planned[0].description.long.contains("Add lib.rs"));
@@ -485,7 +485,7 @@ fn test_squash_many_hunks() {
 
     // Should squash everything into 1 commit
     assert_eq!(planned.len(), 1);
-    assert_eq!(planned[0].hunk_ids.len(), 6);
+    assert_eq!(planned[0].changes.len(), 6);
 }
 
 // ============================================================================
@@ -560,7 +560,7 @@ fn test_deleted_file() {
     let planned = preserve.reorganize(&commits, &hunks).unwrap();
 
     assert_eq!(planned.len(), 1);
-    assert_eq!(planned[0].hunk_ids.len(), 1);
+    assert_eq!(planned[0].changes.len(), 1);
 }
 
 #[test]

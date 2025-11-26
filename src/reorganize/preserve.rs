@@ -42,7 +42,7 @@ impl Reorganizer for PreserveOriginal {
         let mut planned = Vec::new();
         for source in source_commits {
             if let Some(hunk_ids) = hunks_by_commit.get(source.sha.as_str()) {
-                planned.push(PlannedCommit::new(
+                planned.push(PlannedCommit::from_hunk_ids(
                     CommitDescription::new(
                         source.short_description.clone(),
                         source.long_description.clone(),
@@ -105,8 +105,8 @@ mod tests {
 
         assert_eq!(planned.len(), 2);
         assert_eq!(planned[0].description.short, "First commit");
-        assert_eq!(planned[0].hunk_ids.len(), 2);
+        assert_eq!(planned[0].changes.len(), 2);
         assert_eq!(planned[1].description.short, "Second commit");
-        assert_eq!(planned[1].hunk_ids.len(), 1);
+        assert_eq!(planned[1].changes.len(), 1);
     }
 }

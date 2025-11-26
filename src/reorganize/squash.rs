@@ -32,7 +32,7 @@ impl Reorganizer for Squash {
             }
         }
 
-        Ok(vec![PlannedCommit::new(
+        Ok(vec![PlannedCommit::from_hunk_ids(
             CommitDescription::new(short, long),
             hunk_ids,
         )])
@@ -83,7 +83,7 @@ mod tests {
         let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
 
         assert_eq!(planned.len(), 1);
-        assert_eq!(planned[0].hunk_ids.len(), 3);
+        assert_eq!(planned[0].changes.len(), 3);
         assert!(planned[0].description.short.contains("Squashed"));
     }
 }

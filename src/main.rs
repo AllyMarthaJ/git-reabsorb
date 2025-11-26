@@ -7,7 +7,8 @@ use git_scramble::diff_parser::parse_diff;
 use git_scramble::editor::{Editor, SystemEditor};
 use git_scramble::git::{Git, GitOps, PRE_SCRAMBLE_REF};
 use git_scramble::models::{Hunk, PlannedCommit, SourceCommit};
-use git_scramble::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
+use git_scramble::reorganize::llm::ClaudeCliClient;
+use git_scramble::reorganize::{GroupByFile, LlmReorganizer, PreserveOriginal, Reorganizer, Squash};
 
 /// Truncate a SHA to 8 characters for display
 fn short_sha(sha: &str) -> &str {
@@ -54,6 +55,8 @@ enum Strategy {
     ByFile,
     /// Squash all changes into a single commit
     Squash,
+    /// Use LLM to intelligently reorganize commits
+    Llm,
 }
 
 fn main() {
@@ -162,6 +165,7 @@ fn run_scramble<G: GitOps, E: Editor>(
         Strategy::Preserve => Box::new(PreserveOriginal),
         Strategy::ByFile => Box::new(GroupByFile),
         Strategy::Squash => Box::new(Squash),
+        Strategy::Llm => Box::new(LlmReorganizer::new(Box::new(ClaudeCliClient::new()))),
     };
 
     println!("Using strategy: {}", reorganizer.name());
@@ -170,12 +174,12 @@ fn run_scramble<G: GitOps, E: Editor>(
     let planned_commits = reorganizer.reorganize(&source_commits, &hunks)?;
     println!("\nPlanned {} new commits:", planned_commits.len());
     for (i, commit) in planned_commits.iter().enumerate() {
-        let hunk_count = commit.hunk_ids.len();
+        let change_count = commit.changes.len();
         println!(
-            "  {}. \"{}\" ({} hunks)",
+            "  {}. \"{}\" ({} changes)",
             i + 1,
             commit.description.short,
-            hunk_count
+            change_count
         );
     }
     println!();
@@ -281,6 +285,7 @@ fn show_dry_run_plan<G: GitOps>(
         Strategy::Preserve => Box::new(PreserveOriginal),
         Strategy::ByFile => Box::new(GroupByFile),
         Strategy::Squash => Box::new(Squash),
+        Strategy::Llm => Box::new(LlmReorganizer::new(Box::new(ClaudeCliClient::new()))),
     };
 
     println!("Using strategy: {}", reorganizer.name());
@@ -288,12 +293,12 @@ fn show_dry_run_plan<G: GitOps>(
     let planned_commits = reorganizer.reorganize(source_commits, hunks)?;
     println!("\nPlanned {} new commits:", planned_commits.len());
     for (i, commit) in planned_commits.iter().enumerate() {
-        let hunk_count = commit.hunk_ids.len();
+        let change_count = commit.changes.len();
         println!(
-            "  {}. \"{}\" ({} hunks)",
+            "  {}. \"{}\" ({} changes)",
             i + 1,
             commit.description.short,
-            hunk_count
+            change_count
         );
     }
 
@@ -340,7 +345,7 @@ fn parse_range<G: GitOps>(
     }
 }
 
-/// Create all planned commits by applying hunks
+/// Create all planned commits by applying changes
 fn create_commits<G: GitOps, E: Editor>(
     git: &G,
     editor: &E,
@@ -357,12 +362,14 @@ fn create_commits<G: GitOps, E: Editor>(
     for (i, planned) in planned_commits.iter().enumerate() {
         println!("Creating commit {}/{}...", i + 1, total);
 
-        // Collect hunks for this commit
-        let commit_hunks: Vec<&Hunk> = planned
-            .hunk_ids
+        // Resolve all changes to concrete hunks
+        let commit_hunks: Vec<Hunk> = planned
+            .changes
             .iter()
-            .filter_map(|id| hunks.iter().find(|h| h.id == *id))
+            .filter_map(|change| change.resolve(hunks).cloned())
             .collect();
+
+        let commit_hunk_refs: Vec<&Hunk> = commit_hunks.iter().collect();
 
         // Collect all source commits that contributed to this planned commit's hunks
         let source_commits: HashSet<&String> = commit_hunks
@@ -381,13 +388,13 @@ fn create_commits<G: GitOps, E: Editor>(
             .collect();
 
         // Generate help text showing what's in this commit
-        let help_text = generate_commit_help(&commit_hunks, &new_files_for_commit);
+        let help_text = generate_commit_help(&commit_hunk_refs, &new_files_for_commit);
 
         // Open editor for commit message
         let message = editor.edit(&planned.description.long, &help_text)?;
 
         // Stage all hunks for this commit (grouped by file)
-        git.apply_hunks_to_index(&commit_hunks)?;
+        git.apply_hunks_to_index(&commit_hunk_refs)?;
 
         // Stage new files for this commit
         if !new_files_for_commit.is_empty() {
