@@ -1,0 +1,15 @@
+[package]
+name = "git-scramble"
+version = "0.1.0"
+edition = "2021"
+description = "Reorganize git commits by unstaging and recommitting with new structure"
+license = "MIT"
+
+[[bin]]
+name = "git-scramble"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+tempfile = "3.8"
