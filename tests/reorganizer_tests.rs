@@ -1368,3 +1368,302 @@ fn test_apply_hunks_from_multiple_files() {
     let sha = repo.git.commit("Test", false).unwrap();
     assert!(!sha.is_empty());
 }
+
+// ============================================================================
+// Plan File Tests
+// ============================================================================
+
+use git_scramble::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit};
+use git_scramble::reorganize::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
+use std::collections::HashMap;
+
+#[test]
+fn test_saved_plan_creation_and_roundtrip() {
+    let repo = TestRepo::new();
+
+    // Create initial commit (base)
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create a commit to scramble
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let head = repo.commit("Add main");
+
+    // Read commits and hunks
+    let commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&commits);
+
+    // Create planned commits
+    let planned = vec![PlannedCommit::new(
+        CommitDescription::new("Test commit", "This is a test commit"),
+        vec![PlannedChange::ExistingHunk(hunks[0].id)],
+    )];
+
+    // Create SavedPlan
+    let saved_plan = SavedPlan::new(
+        "preserve".to_string(),
+        base.clone(),
+        head.clone(),
+        &planned,
+        &hunks,
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    assert_eq!(saved_plan.version, 1);
+    assert_eq!(saved_plan.strategy, "preserve");
+    assert_eq!(saved_plan.base_sha, base);
+    assert_eq!(saved_plan.original_head, head);
+    assert_eq!(saved_plan.commits.len(), 1);
+    assert_eq!(saved_plan.next_commit_index, 0);
+    assert!(!saved_plan.is_complete());
+
+    // Roundtrip to PlannedCommits
+    let restored = saved_plan.to_planned_commits();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].description.short, "Test commit");
+    assert_eq!(restored[0].changes.len(), 1);
+}
+
+#[test]
+fn test_save_and_load_plan() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create a commit
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let head = repo.commit("Add main");
+
+    // Read hunks
+    let commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&commits);
+
+    // Create and save plan
+    let planned = vec![PlannedCommit::new(
+        CommitDescription::new("Commit 1", "First commit"),
+        vec![PlannedChange::ExistingHunk(hunks[0].id)],
+    )];
+
+    let plan = SavedPlan::new(
+        "by-file".to_string(),
+        base.clone(),
+        head.clone(),
+        &planned,
+        &hunks,
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    // Save plan
+    let path = save_plan(&plan).unwrap();
+    assert!(path.exists());
+    assert!(has_saved_plan());
+
+    // Load plan
+    let loaded = load_plan().unwrap();
+    assert_eq!(loaded.strategy, "by-file");
+    assert_eq!(loaded.base_sha, base);
+    assert_eq!(loaded.commits.len(), 1);
+
+    // Clean up
+    delete_plan().unwrap();
+    assert!(!has_saved_plan());
+}
+
+#[test]
+fn test_plan_progress_tracking() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create commits
+    repo.write_file("src/a.rs", "// a\n");
+    repo.stage_all();
+    repo.commit("Add a");
+
+    repo.write_file("src/b.rs", "// b\n");
+    repo.stage_all();
+    let head = repo.commit("Add b");
+
+    // Read hunks
+    let commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&commits);
+
+    // Create plan with 2 commits
+    let planned = vec![
+        PlannedCommit::new(
+            CommitDescription::new("Commit 1", "First"),
+            vec![PlannedChange::ExistingHunk(HunkId(0))],
+        ),
+        PlannedCommit::new(
+            CommitDescription::new("Commit 2", "Second"),
+            vec![PlannedChange::ExistingHunk(HunkId(1))],
+        ),
+    ];
+
+    let mut plan = SavedPlan::new(
+        "preserve".to_string(),
+        base,
+        head,
+        &planned,
+        &hunks,
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    // Initially not complete
+    assert!(!plan.is_complete());
+    assert_eq!(plan.next_commit_index, 0);
+    assert_eq!(plan.remaining_commits().len(), 2);
+
+    // Mark first commit as created
+    plan.mark_commit_created("abc123".to_string());
+    assert!(!plan.is_complete());
+    assert_eq!(plan.next_commit_index, 1);
+    assert_eq!(plan.remaining_commits().len(), 1);
+    assert_eq!(plan.commits[0].created_sha, Some("abc123".to_string()));
+
+    // Mark second commit as created
+    plan.mark_commit_created("def456".to_string());
+    assert!(plan.is_complete());
+    assert_eq!(plan.next_commit_index, 2);
+    assert_eq!(plan.remaining_commits().len(), 0);
+    assert_eq!(plan.commits[1].created_sha, Some("def456".to_string()));
+}
+
+#[test]
+fn test_plan_with_new_hunks() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create a commit
+    repo.write_file("src/main.rs", "fn main() {\n    println!(\"hello\");\n}\n");
+    repo.stage_all();
+    let head = repo.commit("Add main");
+
+    // Read hunks
+    let commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&commits);
+
+    // Create a "new" hunk (simulating LLM splitting)
+    let mut new_hunk = hunks[0].clone();
+    new_hunk.id = HunkId(100);
+
+    // Create plan with both existing and new hunks
+    let planned = vec![PlannedCommit::new(
+        CommitDescription::new("Split commit", "Contains new hunk"),
+        vec![
+            PlannedChange::ExistingHunk(hunks[0].id),
+            PlannedChange::NewHunk(new_hunk.clone()),
+        ],
+    )];
+
+    let plan = SavedPlan::new(
+        "llm".to_string(),
+        base.clone(),
+        head.clone(),
+        &planned,
+        &hunks,
+        &[new_hunk],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    // Save and reload
+    save_plan(&plan).unwrap();
+    let loaded = load_plan().unwrap();
+
+    // Verify new hunks are preserved
+    assert_eq!(loaded.new_hunks.len(), 1);
+    assert_eq!(loaded.new_hunks[0].id, 100);
+
+    // Roundtrip should work
+    let restored = loaded.to_planned_commits();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].changes.len(), 2);
+
+    // Clean up
+    delete_plan().unwrap();
+}
+
+#[test]
+fn test_plan_stores_file_mappings() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create a commit
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let head = repo.commit("Add main");
+
+    // Read hunks
+    let commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&commits);
+
+    // Create file mappings
+    let mut file_to_commits = HashMap::new();
+    file_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
+
+    let mut new_files_to_commits = HashMap::new();
+    new_files_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
+
+    let planned = vec![PlannedCommit::new(
+        CommitDescription::new("Test", "Test"),
+        vec![PlannedChange::ExistingHunk(hunks[0].id)],
+    )];
+
+    let plan = SavedPlan::new(
+        "preserve".to_string(),
+        base,
+        head.clone(),
+        &planned,
+        &hunks,
+        &[],
+        &file_to_commits,
+        &new_files_to_commits,
+    );
+
+    // Save and reload
+    save_plan(&plan).unwrap();
+    let loaded = load_plan().unwrap();
+
+    // Verify mappings are restored
+    let restored_file_to_commits = loaded.get_file_to_commits();
+    let restored_new_files = loaded.get_new_files_to_commits();
+
+    assert_eq!(restored_file_to_commits.len(), 1);
+    assert_eq!(
+        restored_file_to_commits.get("src/main.rs"),
+        Some(&vec![head.clone()])
+    );
+
+    assert_eq!(restored_new_files.len(), 1);
+    assert_eq!(
+        restored_new_files.get("src/main.rs"),
+        Some(&vec![head])
+    );
+
+    // Clean up
+    delete_plan().unwrap();
+}

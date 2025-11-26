@@ -1,10 +1,14 @@
 mod by_file;
 pub mod llm;
+pub mod plan_file;
 mod preserve;
 mod squash;
 
 pub use by_file::GroupByFile;
 pub use llm::LlmReorganizer;
+pub use plan_file::{
+    delete_plan, has_saved_plan, load_plan, save_plan, PlanFileError, SavedPlan,
+};
 pub use preserve::PreserveOriginal;
 pub use squash::Squash;
 

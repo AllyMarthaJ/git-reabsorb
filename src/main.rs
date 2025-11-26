@@ -8,7 +8,10 @@ use git_scramble::editor::{Editor, SystemEditor};
 use git_scramble::git::{Git, GitOps, PRE_SCRAMBLE_REF};
 use git_scramble::models::{Hunk, PlannedCommit, SourceCommit};
 use git_scramble::reorganize::llm::ClaudeCliClient;
-use git_scramble::reorganize::{GroupByFile, LlmReorganizer, PreserveOriginal, Reorganizer, Squash};
+use git_scramble::reorganize::{
+    delete_plan, has_saved_plan, load_plan, save_plan, GroupByFile, LlmReorganizer,
+    PreserveOriginal, Reorganizer, SavedPlan, Squash,
+};
 
 /// Truncate a SHA to 8 characters for display
 fn short_sha(sha: &str) -> &str {
@@ -45,6 +48,18 @@ struct Cli {
     /// Skip pre-commit and commit-msg hooks
     #[arg(long, conflicts_with = "reset")]
     no_verify: bool,
+
+    /// Generate plan and save it without applying (works with any strategy)
+    #[arg(long, conflicts_with_all = ["reset", "resume", "apply", "dry_run"])]
+    plan_only: bool,
+
+    /// Apply a saved plan from the beginning
+    #[arg(long, conflicts_with_all = ["reset", "plan_only", "resume", "strategy", "range", "base", "dry_run"])]
+    apply: bool,
+
+    /// Resume applying a partially completed plan
+    #[arg(long, conflicts_with_all = ["reset", "plan_only", "apply", "strategy", "range", "base", "dry_run"])]
+    resume: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -76,7 +91,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return run_reset(&git);
     }
 
-    // Run the scramble
+    // Handle apply/resume from saved plan
+    if cli.apply || cli.resume {
+        let editor = SystemEditor::new();
+        return run_apply(&git, &editor, cli.resume, cli.no_verify);
+    }
+
+    // Run the scramble (with optional --plan-only)
     let editor = SystemEditor::new();
     run_scramble(&git, &editor, cli)
 }
@@ -112,12 +133,121 @@ fn run_reset<G: GitOps>(git: &G) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Apply or resume a saved plan
+fn run_apply<G: GitOps, E: Editor>(
+    git: &G,
+    editor: &E,
+    is_resume: bool,
+    no_verify: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load the saved plan
+    let mut plan = load_plan()?;
+
+    if is_resume {
+        // Resume: check if there's progress to continue from
+        if plan.is_complete() {
+            println!("Plan is already complete. Nothing to resume.");
+            delete_plan()?;
+            return Ok(());
+        }
+        let completed = plan.next_commit_index;
+        let total = plan.commits.len();
+        println!(
+            "Resuming plan: {}/{} commits already created",
+            completed, total
+        );
+    } else {
+        // Apply: start from the beginning
+        if plan.next_commit_index > 0 {
+            eprintln!(
+                "Warning: Plan has {} commits already applied. Use --resume to continue, or delete .git/scramble/plan.json to start fresh.",
+                plan.next_commit_index
+            );
+            return Err("Plan partially applied. Use --resume or delete plan.".into());
+        }
+        println!("Applying saved plan (strategy: {})", plan.strategy);
+    }
+
+    // Verify we're at the expected base
+    let current_head = git.get_head()?;
+    if !is_resume && current_head != plan.base_sha {
+        // For apply (not resume), we should be at the base SHA
+        // For resume, we could be anywhere in the middle
+        eprintln!(
+            "Warning: Current HEAD ({}) differs from plan's base ({})",
+            short_sha(&current_head),
+            short_sha(&plan.base_sha)
+        );
+    }
+
+    // Get the working tree hunks and mappings from the saved plan
+    let hunks = plan.get_working_tree_hunks();
+    let new_files_to_commits = plan.get_new_files_to_commits();
+
+    // Get the commits to apply (remaining for resume, all for apply)
+    let planned_commits = plan.to_planned_commits();
+    let commits_to_apply: Vec<_> = if is_resume {
+        planned_commits[plan.next_commit_index..].to_vec()
+    } else {
+        planned_commits
+    };
+
+    println!("\nApplying {} commits:", commits_to_apply.len());
+    for (i, commit) in commits_to_apply.iter().enumerate() {
+        let change_count = commit.changes.len();
+        println!(
+            "  {}. \"{}\" ({} changes)",
+            plan.next_commit_index + i + 1,
+            commit.description.short,
+            change_count
+        );
+    }
+    println!();
+
+    // Create commits with progress tracking
+    let result = create_commits_with_progress(
+        git,
+        editor,
+        &hunks,
+        &commits_to_apply,
+        &new_files_to_commits,
+        no_verify,
+        &mut plan,
+    );
+
+    if let Err(e) = result {
+        eprintln!("\nError during commit creation: {}", e);
+        eprintln!("Progress has been saved. Use --resume to continue.");
+        // Save the updated plan with progress
+        save_plan(&plan)?;
+        return Err(e);
+    }
+
+    // Plan completed successfully - clean up
+    delete_plan()?;
+
+    println!(
+        "\nDone! Successfully created {} commits.",
+        commits_to_apply.len()
+    );
+    println!("To undo this scramble, run: git-scramble --reset");
+
+    Ok(())
+}
+
 /// Run the scramble operation
 fn run_scramble<G: GitOps, E: Editor>(
     git: &G,
     editor: &E,
     cli: Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if there's an existing saved plan
+    if has_saved_plan() {
+        eprintln!("Warning: A saved plan already exists (.git/scramble/plan.json)");
+        eprintln!("Use --apply to apply it, --resume to continue, or delete it first.");
+        eprintln!();
+    }
+
     // Determine the range
     let (base, head) = parse_range(git, cli.range.as_deref(), cli.base.as_deref())?;
     println!("Scrambling commits from {}..{}", short_sha(&base), short_sha(&head));
@@ -168,7 +298,8 @@ fn run_scramble<G: GitOps, E: Editor>(
         Strategy::Llm => Box::new(LlmReorganizer::new(Box::new(ClaudeCliClient::new()))),
     };
 
-    println!("Using strategy: {}", reorganizer.name());
+    let strategy_name = reorganizer.name().to_string();
+    println!("Using strategy: {}", strategy_name);
 
     // Plan the reorganization
     let planned_commits = reorganizer.reorganize(&source_commits, &hunks)?;
@@ -184,17 +315,75 @@ fn run_scramble<G: GitOps, E: Editor>(
     }
     println!();
 
-    // Step 7: Create each commit
-    let result = create_commits(git, editor, &hunks, &planned_commits, &new_files_to_commits, cli.no_verify);
+    // Extract any new hunks created by the reorganizer (for LLM splitting)
+    let new_hunks: Vec<Hunk> = planned_commits
+        .iter()
+        .flat_map(|c| &c.changes)
+        .filter_map(|change| {
+            if let git_scramble::models::PlannedChange::NewHunk(h) = change {
+                Some(h.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Handle --plan-only: save plan and exit
+    if cli.plan_only {
+        let plan = SavedPlan::new(
+            strategy_name,
+            base.clone(),
+            head.clone(),
+            &planned_commits,
+            &hunks,
+            &new_hunks,
+            &file_to_commits,
+            &new_files_to_commits,
+        );
+        let path = save_plan(&plan)?;
+        println!("Plan saved to {}", path.display());
+        println!("Working tree is now reset to {}", short_sha(&base));
+        println!("\nTo apply this plan, run: git-scramble --apply");
+        println!("To resume after partial apply: git-scramble --resume");
+        println!("To undo the reset: git-scramble --reset");
+        return Ok(());
+    }
+
+    // Step 7: Create each commit (with progress tracking for resumption)
+    let mut plan = SavedPlan::new(
+        strategy_name,
+        base.clone(),
+        head.clone(),
+        &planned_commits,
+        &hunks,
+        &new_hunks,
+        &file_to_commits,
+        &new_files_to_commits,
+    );
+
+    // Save plan initially so it can be resumed if interrupted
+    save_plan(&plan)?;
+
+    let result = create_commits_with_progress(
+        git,
+        editor,
+        &hunks,
+        &planned_commits,
+        &new_files_to_commits,
+        cli.no_verify,
+        &mut plan,
+    );
 
     if let Err(e) = result {
         eprintln!("\nError during commit creation: {}", e);
-        eprintln!("Restoring pre-scramble state...");
-        let pre_scramble = git.get_pre_scramble_head()?;
-        git.reset_hard(&pre_scramble)?;
-        git.clear_pre_scramble_head()?;
+        // Save progress for resumption
+        save_plan(&plan)?;
+        eprintln!("Progress saved. Use --resume to continue, or --reset to undo.");
         return Err(e);
     }
+
+    // Success - clean up plan file
+    delete_plan()?;
 
     println!(
         "\nDone! Successfully created {} commits.",
@@ -345,21 +534,44 @@ fn parse_range<G: GitOps>(
     }
 }
 
-/// Create all planned commits by applying changes
-fn create_commits<G: GitOps, E: Editor>(
+/// Create all planned commits with progress tracking for resumption
+fn create_commits_with_progress<G: GitOps, E: Editor>(
     git: &G,
     editor: &E,
     hunks: &[Hunk],
     planned_commits: &[PlannedCommit],
     new_files_to_commits: &HashMap<String, Vec<String>>,
     no_verify: bool,
+    plan: &mut SavedPlan,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let total = planned_commits.len();
+    let start_index = plan.next_commit_index;
 
     // Track which new files have been staged to avoid duplicates
+    // For resume, we need to account for files staged in earlier commits
     let mut staged_new_files: HashSet<String> = HashSet::new();
 
-    for (i, planned) in planned_commits.iter().enumerate() {
+    // Mark files from already-created commits as staged
+    for i in 0..start_index {
+        let commit_hunks: Vec<Hunk> = planned_commits[i]
+            .changes
+            .iter()
+            .filter_map(|change| change.resolve(hunks).cloned())
+            .collect();
+
+        let source_commits: HashSet<&String> = commit_hunks
+            .iter()
+            .flat_map(|h| &h.likely_source_commits)
+            .collect();
+
+        for (file, commits) in new_files_to_commits.iter() {
+            if commits.iter().any(|c| source_commits.contains(c)) {
+                staged_new_files.insert(file.clone());
+            }
+        }
+    }
+
+    for (i, planned) in planned_commits.iter().enumerate().skip(start_index) {
         println!("Creating commit {}/{}...", i + 1, total);
 
         // Resolve all changes to concrete hunks
@@ -413,6 +625,12 @@ fn create_commits<G: GitOps, E: Editor>(
         // Create the commit
         let new_sha = git.commit(&message, no_verify)?;
         println!("  Created commit {}", short_sha(&new_sha));
+
+        // Track progress in the plan
+        plan.mark_commit_created(new_sha);
+
+        // Save progress after each commit for resumption
+        save_plan(plan)?;
     }
 
     Ok(())
