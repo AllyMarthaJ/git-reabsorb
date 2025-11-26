@@ -138,6 +138,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &planned_commits,
             &new_files_to_commits,
             opts.no_verify,
+            opts.no_editor,
             &mut plan,
         ) {
             eprintln!("\nError during commit creation: {}", err);
@@ -250,6 +251,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.planned_commits,
             &plan.new_files_to_commits,
             opts.no_verify,
+            opts.no_editor,
             &mut saved_plan,
         ) {
             eprintln!("\nError: {}", err);

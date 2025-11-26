@@ -38,6 +38,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         planned_commits: &[PlannedCommit],
         new_files_to_commits: &HashMap<String, Vec<String>>,
         no_verify: bool,
+        no_editor: bool,
         plan: &mut SavedPlan,
     ) -> Result<(), ExecutionError> {
         let total = planned_commits.len();
@@ -69,7 +70,11 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
 
             let help_text = generate_commit_help(&commit_hunk_refs, &new_files);
             let template = commit_message_template(&planned.description);
-            let message = self.editor.edit(&template, &help_text)?;
+            let message = if no_editor {
+                template
+            } else {
+                self.editor.edit(&template, &help_text)?
+            };
 
             self.git.apply_hunks_to_index(&commit_hunk_refs)?;
 

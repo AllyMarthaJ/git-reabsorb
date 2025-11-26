@@ -50,6 +50,10 @@ pub struct PlanArgs {
     /// Skip pre-commit and commit-msg hooks
     #[arg(long)]
     pub no_verify: bool,
+
+    /// Use planned messages without opening an editor
+    #[arg(long = "no-editor")]
+    pub no_editor: bool,
 }
 
 #[derive(Args, Debug)]
@@ -61,6 +65,10 @@ pub struct ApplyArgs {
     /// Skip pre-commit and commit-msg hooks
     #[arg(long)]
     pub no_verify: bool,
+
+    /// Use the planned commit messages without opening an editor
+    #[arg(long = "no-editor")]
+    pub no_editor: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
