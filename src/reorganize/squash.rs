@@ -58,7 +58,7 @@ mod tests {
             new_start: 1,
             new_count: 1,
             lines: vec![DiffLine::Added("test".to_string())],
-            source_commit_sha: "abc".to_string(),
+            likely_source_commits: vec!["abc".to_string()],
         }
     }
 

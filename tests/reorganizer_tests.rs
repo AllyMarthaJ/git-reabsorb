@@ -20,8 +20,8 @@ impl TestRepo {
         let path = std::env::temp_dir().join(format!("git-scramble-test-{}", uuid()));
         fs::create_dir_all(&path).expect("Failed to create temp dir");
 
-        // Initialize git repo
-        run_git(&path, &["init"]);
+        // Initialize git repo with main as default branch
+        run_git(&path, &["init", "-b", "main"]);
         run_git(&path, &["config", "user.email", "test@example.com"]);
         run_git(&path, &["config", "user.name", "Test User"]);
 
@@ -615,4 +615,756 @@ fn test_empty_file_creation() {
         let planned = preserve.reorganize(&commits, &hunks).unwrap();
         assert!(!planned.is_empty());
     }
+}
+
+// ============================================================================
+// Pre-Scramble State Tests
+// ============================================================================
+
+#[test]
+fn test_save_and_get_pre_scramble_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let initial_head = repo.commit("Initial commit");
+
+    // Initially, no pre-scramble state should exist
+    assert!(!repo.git.has_pre_scramble_head());
+
+    // Save the pre-scramble state
+    repo.git.save_pre_scramble_head().unwrap();
+
+    // Now it should exist
+    assert!(repo.git.has_pre_scramble_head());
+
+    // And it should match the current HEAD
+    let saved = repo.git.get_pre_scramble_head().unwrap();
+    assert_eq!(saved, initial_head);
+}
+
+#[test]
+fn test_clear_pre_scramble_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    repo.commit("Initial commit");
+
+    // Save and verify
+    repo.git.save_pre_scramble_head().unwrap();
+    assert!(repo.git.has_pre_scramble_head());
+
+    // Clear it
+    repo.git.clear_pre_scramble_head().unwrap();
+
+    // Should no longer exist
+    assert!(!repo.git.has_pre_scramble_head());
+}
+
+#[test]
+fn test_clear_nonexistent_pre_scramble_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    repo.commit("Initial commit");
+
+    // Clearing when none exists should not error
+    assert!(!repo.git.has_pre_scramble_head());
+    repo.git.clear_pre_scramble_head().unwrap();
+    assert!(!repo.git.has_pre_scramble_head());
+}
+
+#[test]
+fn test_get_pre_scramble_head_when_none_exists() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    repo.commit("Initial commit");
+
+    // Should return error when no pre-scramble state exists
+    assert!(!repo.git.has_pre_scramble_head());
+    let result = repo.git.get_pre_scramble_head();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_pre_scramble_head_survives_new_commits() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let initial_head = repo.commit("Initial commit");
+
+    // Save pre-scramble state
+    repo.git.save_pre_scramble_head().unwrap();
+
+    // Create more commits
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    repo.commit("Add main.rs");
+
+    repo.write_file("src/lib.rs", "pub fn lib() {}\n");
+    repo.stage_all();
+    repo.commit("Add lib.rs");
+
+    // Pre-scramble state should still point to the original HEAD
+    let saved = repo.git.get_pre_scramble_head().unwrap();
+    assert_eq!(saved, initial_head);
+}
+
+#[test]
+fn test_reset_to_pre_scramble_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let initial_head = repo.commit("Initial commit");
+
+    // Save pre-scramble state
+    repo.git.save_pre_scramble_head().unwrap();
+
+    // Create more commits
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    repo.commit("Add main.rs");
+
+    repo.write_file("src/lib.rs", "pub fn lib() {}\n");
+    repo.stage_all();
+    let final_head = repo.commit("Add lib.rs");
+
+    // Verify we're at the new HEAD
+    assert_eq!(repo.git.get_head().unwrap(), final_head);
+
+    // Reset to pre-scramble state
+    let pre_scramble = repo.git.get_pre_scramble_head().unwrap();
+    repo.git.reset_hard(&pre_scramble).unwrap();
+
+    // Verify we're back at the original HEAD
+    assert_eq!(repo.git.get_head().unwrap(), initial_head);
+
+    // Clean up the ref
+    repo.git.clear_pre_scramble_head().unwrap();
+}
+
+#[test]
+fn test_overwrite_pre_scramble_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let first_head = repo.commit("Initial commit");
+
+    // Save pre-scramble state
+    repo.git.save_pre_scramble_head().unwrap();
+    assert_eq!(repo.git.get_pre_scramble_head().unwrap(), first_head);
+
+    // Create another commit
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let second_head = repo.commit("Add main.rs");
+
+    // Overwrite pre-scramble state
+    repo.git.save_pre_scramble_head().unwrap();
+
+    // Should now point to the second HEAD
+    assert_eq!(repo.git.get_pre_scramble_head().unwrap(), second_head);
+}
+
+// ============================================================================
+// Branch Base Tests
+// ============================================================================
+
+#[test]
+fn test_find_merge_base_with_branch() {
+    let repo = TestRepo::new();
+
+    // Create initial commit on main
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let main_head = repo.commit("Initial commit");
+
+    // Create a branch
+    run_git(&repo.path, &["checkout", "-b", "feature"]);
+
+    // Add commits on feature branch
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    repo.commit("Add main.rs");
+
+    repo.write_file("src/lib.rs", "pub fn lib() {}\n");
+    repo.stage_all();
+    repo.commit("Add lib.rs");
+
+    // Find merge-base with main should return the initial commit
+    let merge_base = repo.git.find_merge_base("main").unwrap();
+    assert_eq!(merge_base, main_head);
+}
+
+#[test]
+fn test_find_merge_base_with_diverged_branches() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let initial_commit = repo.commit("Initial commit");
+
+    // Create a branch from here
+    run_git(&repo.path, &["checkout", "-b", "feature"]);
+
+    // Add commit on feature
+    repo.write_file("src/feature.rs", "fn feature() {}\n");
+    repo.stage_all();
+    repo.commit("Add feature");
+
+    // Go back to main and add a commit there too
+    run_git(&repo.path, &["checkout", "main"]);
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    repo.commit("Add main on main branch");
+
+    // Go back to feature
+    run_git(&repo.path, &["checkout", "feature"]);
+
+    // Merge base should still be the initial commit
+    let merge_base = repo.git.find_merge_base("main").unwrap();
+    assert_eq!(merge_base, initial_commit);
+}
+
+// ============================================================================
+// New File Detection Tests
+// ============================================================================
+
+#[test]
+fn test_get_new_files_in_commit_detects_added_files() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let _base = repo.commit("Initial commit");
+
+    // Create a commit that adds new files
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.write_file("src/lib.rs", "pub fn lib() {}\n");
+    repo.stage_all();
+    let commit_sha = repo.commit("Add source files");
+
+    // Check that get_new_files_in_commit finds both files
+    let new_files = repo.git.get_new_files_in_commit(&commit_sha).unwrap();
+    assert_eq!(new_files.len(), 2);
+    assert!(new_files.contains(&"src/main.rs".to_string()));
+    assert!(new_files.contains(&"src/lib.rs".to_string()));
+}
+
+#[test]
+fn test_get_new_files_in_commit_ignores_modified_files() {
+    let repo = TestRepo::new();
+
+    // Create initial commit with a file
+    repo.write_file("README.md", "# Test\n");
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let _base = repo.commit("Initial commit");
+
+    // Modify existing file and add a new one
+    repo.write_file("src/main.rs", "fn main() { println!(\"hello\"); }\n");
+    repo.write_file("src/lib.rs", "pub fn lib() {}\n");
+    repo.stage_all();
+    let commit_sha = repo.commit("Modify main.rs and add lib.rs");
+
+    // Should only detect lib.rs as new, not main.rs
+    let new_files = repo.git.get_new_files_in_commit(&commit_sha).unwrap();
+    assert_eq!(new_files.len(), 1);
+    assert!(new_files.contains(&"src/lib.rs".to_string()));
+    assert!(!new_files.contains(&"src/main.rs".to_string()));
+}
+
+#[test]
+fn test_get_new_files_in_commit_empty_when_only_modifications() {
+    let repo = TestRepo::new();
+
+    // Create initial commit with files
+    repo.write_file("README.md", "# Test\n");
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let _base = repo.commit("Initial commit");
+
+    // Only modify existing files
+    repo.write_file("README.md", "# Updated Test\n");
+    repo.write_file("src/main.rs", "fn main() { println!(\"hello\"); }\n");
+    repo.stage_all();
+    let commit_sha = repo.commit("Update files");
+
+    // Should be empty - no new files
+    let new_files = repo.git.get_new_files_in_commit(&commit_sha).unwrap();
+    assert!(new_files.is_empty());
+}
+
+#[test]
+fn test_get_new_files_in_nested_directories() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let _base = repo.commit("Initial commit");
+
+    // Add files in deeply nested directories
+    repo.write_file("src/components/ui/Button.tsx", "export const Button = () => {};\n");
+    repo.write_file("src/components/ui/Input.tsx", "export const Input = () => {};\n");
+    repo.write_file("src/utils/helpers/string.ts", "export const trim = (s: string) => s.trim();\n");
+    repo.stage_all();
+    let commit_sha = repo.commit("Add nested files");
+
+    let new_files = repo.git.get_new_files_in_commit(&commit_sha).unwrap();
+    assert_eq!(new_files.len(), 3);
+    assert!(new_files.contains(&"src/components/ui/Button.tsx".to_string()));
+    assert!(new_files.contains(&"src/components/ui/Input.tsx".to_string()));
+    assert!(new_files.contains(&"src/utils/helpers/string.ts".to_string()));
+}
+
+// ============================================================================
+// Working Tree Diff Tests
+// ============================================================================
+
+#[test]
+fn test_working_tree_diff_after_reset_shows_modified_files() {
+    let repo = TestRepo::new();
+
+    // Create initial commit with files (so they're tracked)
+    repo.write_file("README.md", "# Test\n");
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Modify the tracked files
+    repo.write_file("README.md", "# Updated Test\n\nMore content.\n");
+    repo.write_file("src/main.rs", "fn main() {\n    println!(\"hello\");\n}\n");
+    repo.stage_all();
+    repo.commit("Update files");
+
+    // Reset to base (mixed reset keeps changes in working tree)
+    repo.git.reset_to(&base).unwrap();
+
+    // Working tree diff should show modifications to TRACKED files
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    assert!(diff.contains("README.md"), "Should show modified README.md");
+    assert!(diff.contains("src/main.rs"), "Should show modified main.rs");
+    assert!(diff.contains("println!(\"hello\")"), "Should show the new content");
+}
+
+#[test]
+fn test_working_tree_diff_does_not_show_new_untracked_files() {
+    let repo = TestRepo::new();
+
+    // Create initial commit (base)
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Add NEW files (not tracked in base)
+    repo.write_file("src/new_file.rs", "fn new() {}\n");
+    repo.stage_all();
+    repo.commit("Add new file");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Working tree diff does NOT show untracked files - this is expected behavior
+    // The new files become untracked after reset, and git diff HEAD ignores them
+    let diff = repo.git.get_working_tree_diff().unwrap();
+
+    // The diff should be empty or not contain the new file
+    // (this is WHY we need separate new file tracking)
+    assert!(!diff.contains("new_file.rs"),
+        "Untracked files should NOT appear in git diff HEAD - this is why we track them separately");
+}
+
+#[test]
+fn test_working_tree_diff_shows_modifications() {
+    let repo = TestRepo::new();
+
+    // Create initial commit with content
+    repo.write_file("src/main.rs", "fn main() {\n    // original\n}\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Modify the file
+    repo.write_file("src/main.rs", "fn main() {\n    println!(\"modified\");\n}\n");
+    repo.stage_all();
+    repo.commit("Modify main.rs");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Working tree diff should show the modification
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    assert!(diff.contains("-    // original"));
+    assert!(diff.contains("+    println!(\"modified\")"));
+}
+
+// ============================================================================
+// Multiple Hunks Per File Tests
+// ============================================================================
+
+#[test]
+fn test_multiple_hunks_same_file_applied_together() {
+    let repo = TestRepo::new();
+
+    // Create initial commit with a larger file
+    repo.write_file(
+        "src/main.rs",
+        r#"fn main() {
+    // start
+}
+
+fn helper_one() {
+    // helper one
+}
+
+fn helper_two() {
+    // helper two
+}
+"#,
+    );
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Modify multiple non-contiguous sections (creates multiple hunks)
+    repo.write_file(
+        "src/main.rs",
+        r#"fn main() {
+    println!("start");
+}
+
+fn helper_one() {
+    println!("helper one");
+}
+
+fn helper_two() {
+    println!("helper two");
+}
+"#,
+    );
+    repo.stage_all();
+    repo.commit("Add print statements");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Parse hunks from working tree
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+
+    // Should have multiple hunks (depending on git's diff algorithm)
+    // The key is that they all apply cleanly when grouped
+    assert!(!hunks.is_empty());
+
+    // Apply all hunks together
+    let hunk_refs: Vec<&Hunk> = hunks.iter().collect();
+    let result = repo.git.apply_hunks_to_index(&hunk_refs);
+    assert!(result.is_ok(), "Multiple hunks should apply cleanly: {:?}", result);
+
+    // Commit to verify everything staged correctly
+    let sha = repo.git.commit("Test commit", false).unwrap();
+    assert!(!sha.is_empty());
+}
+
+#[test]
+fn test_hunks_sorted_by_line_number_before_apply() {
+    let repo = TestRepo::new();
+
+    // Create a file with distinct sections
+    repo.write_file(
+        "src/main.rs",
+        r#"// Line 1
+// Line 2
+// Line 3
+// Line 10
+// Line 11
+// Line 12
+// Line 20
+// Line 21
+// Line 22
+"#,
+    );
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Modify lines in multiple places
+    repo.write_file(
+        "src/main.rs",
+        r#"// Modified Line 1
+// Line 2
+// Line 3
+// Line 10
+// Modified Line 11
+// Line 12
+// Line 20
+// Line 21
+// Modified Line 22
+"#,
+    );
+    repo.stage_all();
+    repo.commit("Modify multiple lines");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Parse hunks
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+
+    // Even if hunks come in any order, they should apply correctly
+    // because apply_hunks_to_index sorts them
+    let hunk_refs: Vec<&Hunk> = hunks.iter().collect();
+    let result = repo.git.apply_hunks_to_index(&hunk_refs);
+    assert!(result.is_ok(), "Hunks should be sorted and apply cleanly");
+}
+
+// ============================================================================
+// Full Scramble Flow with New Files Tests
+// ============================================================================
+
+#[test]
+fn test_scramble_includes_new_files_in_squash() {
+    let repo = TestRepo::new();
+
+    // Create initial commit (base)
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // First commit: modify existing file
+    repo.write_file("README.md", "# Test Project\n\nThis is a test.\n");
+    repo.stage_all();
+    repo.commit("Update README");
+
+    // Second commit: add new files
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.write_file("src/lib.rs", "pub fn lib() {}\n");
+    repo.stage_all();
+    repo.commit("Add source files");
+
+    // Get source commits for context
+    let source_commits = repo.read_commits(&base, "HEAD");
+    assert_eq!(source_commits.len(), 2);
+
+    // Build new files mapping
+    let mut new_files_to_commits = std::collections::HashMap::new();
+    for commit in &source_commits {
+        let new_files = repo.git.get_new_files_in_commit(&commit.sha).unwrap();
+        for file in new_files {
+            new_files_to_commits
+                .entry(file)
+                .or_insert_with(Vec::new)
+                .push(commit.sha.clone());
+        }
+    }
+
+    // Should have detected src/main.rs and src/lib.rs as new
+    assert!(new_files_to_commits.contains_key("src/main.rs"));
+    assert!(new_files_to_commits.contains_key("src/lib.rs"));
+
+    // Now do the reset and verify new files become untracked
+    repo.git.reset_to(&base).unwrap();
+
+    // Check git status for untracked files - they appear under src/ directory
+    let status = run_git(&repo.path, &["status", "--porcelain"]);
+    // Git may show them as "?? src/" if the directory is new, or individually
+    assert!(
+        status.contains("?? src/") || status.contains("?? src/main.rs"),
+        "New files should be untracked after reset. Status: {}",
+        status
+    );
+
+    // Stage the new files
+    run_git(&repo.path, &["add", "src/"]);
+
+    // Verify they're now staged
+    let status_after = run_git(&repo.path, &["status", "--porcelain"]);
+    assert!(
+        status_after.contains("A  src/main.rs") || status_after.contains("A src/main.rs"),
+        "Files should be staged. Status: {}",
+        status_after
+    );
+}
+
+#[test]
+fn test_new_files_mapped_to_correct_source_commits() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Commit 1: adds file A
+    repo.write_file("src/a.rs", "pub fn a() {}\n");
+    repo.stage_all();
+    let commit1 = repo.commit("Add a.rs");
+
+    // Commit 2: adds file B
+    repo.write_file("src/b.rs", "pub fn b() {}\n");
+    repo.stage_all();
+    let commit2 = repo.commit("Add b.rs");
+
+    // Commit 3: adds file C
+    repo.write_file("src/c.rs", "pub fn c() {}\n");
+    repo.stage_all();
+    let commit3 = repo.commit("Add c.rs");
+
+    // Check each commit's new files
+    let new_files_1 = repo.git.get_new_files_in_commit(&commit1).unwrap();
+    let new_files_2 = repo.git.get_new_files_in_commit(&commit2).unwrap();
+    let new_files_3 = repo.git.get_new_files_in_commit(&commit3).unwrap();
+
+    assert_eq!(new_files_1, vec!["src/a.rs"]);
+    assert_eq!(new_files_2, vec!["src/b.rs"]);
+    assert_eq!(new_files_3, vec!["src/c.rs"]);
+
+    // Verify using read_commits flow
+    let source_commits = repo.read_commits(&base, "HEAD");
+    assert_eq!(source_commits.len(), 3);
+}
+
+// ============================================================================
+// Commit with no-verify Tests
+// ============================================================================
+
+#[test]
+fn test_commit_without_no_verify() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    repo.commit("Initial commit");
+
+    // Add a file and stage it
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+
+    // Commit without no_verify
+    let result = repo.git.commit("Add main.rs", false);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_commit_with_no_verify() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    repo.commit("Initial commit");
+
+    // Create a pre-commit hook that would fail
+    let hooks_dir = repo.path.join(".git/hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    let hook_path = hooks_dir.join("pre-commit");
+    fs::write(&hook_path, "#!/bin/sh\nexit 1\n").unwrap();
+
+    // Make hook executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms).unwrap();
+    }
+
+    // Add a file and stage it
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+
+    // Without no_verify, commit should fail (hook returns exit 1)
+    let _result_without = repo.git.commit("Should fail", false);
+
+    // Re-stage if needed (commit failure might unstage)
+    repo.stage_all();
+
+    // With no_verify, commit should succeed
+    let result_with = repo.git.commit("Should succeed", true);
+    assert!(result_with.is_ok(), "Commit with --no-verify should skip hooks");
+}
+
+// ============================================================================
+// Apply Hunks to Index Tests
+// ============================================================================
+
+#[test]
+fn test_apply_single_hunk_to_index() {
+    let repo = TestRepo::new();
+
+    // Create initial file
+    repo.write_file("src/main.rs", "fn main() {\n    // original\n}\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Modify the file
+    repo.write_file("src/main.rs", "fn main() {\n    println!(\"modified\");\n}\n");
+    repo.stage_all();
+    repo.commit("Modify");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Parse the hunk
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    assert!(!hunks.is_empty());
+
+    // Apply single hunk
+    let result = repo.git.apply_hunk_to_index(&hunks[0]);
+    assert!(result.is_ok());
+
+    // Verify something is staged
+    let status = run_git(&repo.path, &["status", "--porcelain"]);
+    assert!(status.contains("M") || status.contains("A"));
+}
+
+#[test]
+fn test_apply_hunks_from_multiple_files() {
+    let repo = TestRepo::new();
+
+    // Create initial files
+    repo.write_file("src/a.rs", "// a\n");
+    repo.write_file("src/b.rs", "// b\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Modify both files
+    repo.write_file("src/a.rs", "// modified a\n");
+    repo.write_file("src/b.rs", "// modified b\n");
+    repo.stage_all();
+    repo.commit("Modify both");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Parse hunks
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    assert_eq!(hunks.len(), 2);
+
+    // Apply all hunks together
+    let hunk_refs: Vec<&Hunk> = hunks.iter().collect();
+    let result = repo.git.apply_hunks_to_index(&hunk_refs);
+    assert!(result.is_ok());
+
+    // Commit to verify
+    let sha = repo.git.commit("Test", false).unwrap();
+    assert!(!sha.is_empty());
 }

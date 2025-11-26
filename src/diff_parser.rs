@@ -11,10 +11,15 @@ pub enum DiffParseError {
     UnexpectedFormat(String),
 }
 
-/// Parse a unified diff output into hunks
+/// Parse a unified diff output into hunks.
+///
+/// `likely_source_commits` is a list of commit SHAs that likely contributed
+/// to these hunks. For single-commit diffs (like `git show`), this is just
+/// that commit. For working tree diffs, this can be determined by analyzing
+/// which commits touched each file.
 pub fn parse_diff(
     diff_output: &str,
-    source_commit_sha: &str,
+    likely_source_commits: &[String],
     hunk_id_start: usize,
 ) -> Result<Vec<Hunk>, DiffParseError> {
     let mut hunks = Vec::new();
@@ -27,7 +32,7 @@ pub fn parse_diff(
         if line.starts_with("diff --git ") {
             // Finish any in-progress hunk
             if let Some(builder) = current_hunk.take() {
-                hunks.push(builder.build(source_commit_sha));
+                hunks.push(builder.build(likely_source_commits));
             }
 
             // Parse file path from "diff --git a/path b/path"
@@ -64,7 +69,7 @@ pub fn parse_diff(
         if line.starts_with("@@ ") {
             // Finish any in-progress hunk
             if let Some(builder) = current_hunk.take() {
-                hunks.push(builder.build(source_commit_sha));
+                hunks.push(builder.build(likely_source_commits));
             }
 
             // Parse hunk header
@@ -102,7 +107,7 @@ pub fn parse_diff(
 
     // Finish final hunk
     if let Some(builder) = current_hunk.take() {
-        hunks.push(builder.build(source_commit_sha));
+        hunks.push(builder.build(likely_source_commits));
     }
 
     Ok(hunks)
@@ -170,7 +175,7 @@ struct HunkBuilder {
 }
 
 impl HunkBuilder {
-    fn build(self, source_commit_sha: &str) -> Hunk {
+    fn build(self, likely_source_commits: &[String]) -> Hunk {
         Hunk {
             id: self.id,
             file_path: self.file_path,
@@ -179,7 +184,7 @@ impl HunkBuilder {
             new_start: self.new_start,
             new_count: self.new_count,
             lines: self.lines,
-            source_commit_sha: source_commit_sha.to_string(),
+            likely_source_commits: likely_source_commits.to_vec(),
         }
     }
 }
@@ -201,13 +206,14 @@ index 1234567..abcdefg 100644
  }
 "#;
 
-        let hunks = parse_diff(diff, "abc123", 0).unwrap();
+        let hunks = parse_diff(diff, &["abc123".to_string()], 0).unwrap();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].file_path, PathBuf::from("src/main.rs"));
         assert_eq!(hunks[0].old_start, 1);
         assert_eq!(hunks[0].old_count, 3);
         assert_eq!(hunks[0].new_start, 1);
         assert_eq!(hunks[0].new_count, 4);
+        assert_eq!(hunks[0].likely_source_commits, vec!["abc123".to_string()]);
     }
 
     #[test]
@@ -218,5 +224,177 @@ index 1234567..abcdefg 100644
             parse_hunk_header("@@ -10,20 +15,25 @@ fn foo()").unwrap(),
             (10, 20, 15, 25)
         );
+    }
+
+    #[test]
+    fn test_parse_diff_multiple_source_commits() {
+        let diff = r#"diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1,2 +1,3 @@
+ line1
++line2
+ line3
+"#;
+
+        let source_commits = vec!["commit1".to_string(), "commit2".to_string()];
+        let hunks = parse_diff(diff, &source_commits, 0).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].likely_source_commits, source_commits);
+    }
+
+    #[test]
+    fn test_parse_diff_multiple_hunks_same_file() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("start");
+ }
+
+@@ -10,3 +11,4 @@
+ fn helper() {
++    println!("helper");
+ }
+"#;
+
+        let hunks = parse_diff(diff, &[], 0).unwrap();
+        assert_eq!(hunks.len(), 2);
+        // Both hunks should be for the same file
+        assert_eq!(hunks[0].file_path, hunks[1].file_path);
+        // First hunk starts at line 1
+        assert_eq!(hunks[0].old_start, 1);
+        // Second hunk starts at line 10
+        assert_eq!(hunks[1].old_start, 10);
+    }
+
+    #[test]
+    fn test_parse_diff_multiple_files() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,3 @@
+ fn main() {
++    lib::greet();
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,4 @@
+ pub fn greet() {
++    println!("Hello");
+ }
+"#;
+
+        let hunks = parse_diff(diff, &[], 0).unwrap();
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].file_path, PathBuf::from("src/main.rs"));
+        assert_eq!(hunks[1].file_path, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_parse_diff_new_file() {
+        let diff = r#"diff --git a/src/new.rs b/src/new.rs
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/src/new.rs
+@@ -0,0 +1,3 @@
++fn new_function() {
++    println!("I'm new!");
++}
+"#;
+
+        let hunks = parse_diff(diff, &[], 0).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].file_path, PathBuf::from("src/new.rs"));
+        // New file: old_start and old_count should be 0
+        assert_eq!(hunks[0].old_start, 0);
+        assert_eq!(hunks[0].old_count, 0);
+        assert_eq!(hunks[0].new_start, 1);
+        assert_eq!(hunks[0].new_count, 3);
+    }
+
+    #[test]
+    fn test_parse_diff_deleted_file() {
+        let diff = r#"diff --git a/src/old.rs b/src/old.rs
+deleted file mode 100644
+index 1234567..0000000
+--- a/src/old.rs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-fn old_function() {
+-    println!("I'm being deleted!");
+-}
+"#;
+
+        let hunks = parse_diff(diff, &[], 0).unwrap();
+        assert_eq!(hunks.len(), 1);
+        // File path should come from the --- line or diff header
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[0].old_count, 3);
+        assert_eq!(hunks[0].new_start, 0);
+        assert_eq!(hunks[0].new_count, 0);
+    }
+
+    #[test]
+    fn test_parse_diff_with_context_function_header() {
+        // Git often includes the function name after the @@ header
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -5,6 +5,7 @@ fn some_function() {
+     let x = 1;
+     let y = 2;
++    let z = 3;
+     println!("{}", x + y);
+ }
+"#;
+
+        let hunks = parse_diff(diff, &[], 0).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_start, 5);
+        assert_eq!(hunks[0].old_count, 6);
+        assert_eq!(hunks[0].new_start, 5);
+        assert_eq!(hunks[0].new_count, 7);
+    }
+
+    #[test]
+    fn test_parse_diff_empty_source_commits() {
+        let diff = r#"diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1 +1,2 @@
+ line1
++line2
+"#;
+
+        let hunks = parse_diff(diff, &[], 0).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].likely_source_commits.is_empty());
+    }
+
+    #[test]
+    fn test_hunk_id_starts_from_provided_value() {
+        let diff = r#"diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1,2 @@
+ line
++new
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -1 +1,2 @@
+ line
++new
+"#;
+
+        // Start from hunk_id 100
+        let hunks = parse_diff(diff, &[], 100).unwrap();
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].id.0, 100);
+        assert_eq!(hunks[1].id.0, 101);
     }
 }

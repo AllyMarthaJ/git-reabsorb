@@ -1,9 +1,11 @@
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::process;
 
 use clap::{Parser, ValueEnum};
 
+use git_scramble::diff_parser::parse_diff;
 use git_scramble::editor::{Editor, SystemEditor};
-use git_scramble::git::{Git, GitOps};
+use git_scramble::git::{Git, GitOps, PRE_SCRAMBLE_REF};
 use git_scramble::models::{Hunk, PlannedCommit, SourceCommit};
 use git_scramble::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
 
@@ -14,16 +16,29 @@ use git_scramble::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squas
 struct Cli {
     /// Commit range to scramble (default: auto-detect branch base..HEAD)
     /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456
-    #[arg(value_name = "RANGE")]
+    #[arg(value_name = "RANGE", conflicts_with_all = ["reset", "base"])]
     range: Option<String>,
 
+    /// Base branch to scramble from (finds merge-base with HEAD)
+    /// Examples: main, develop, origin/main
+    #[arg(short, long, conflicts_with_all = ["reset", "range"])]
+    base: Option<String>,
+
     /// Reorganization strategy
-    #[arg(short, long, value_enum, default_value = "preserve")]
+    #[arg(short, long, value_enum, default_value = "preserve", conflicts_with = "reset")]
     strategy: Strategy,
 
     /// Show plan without executing
-    #[arg(long)]
+    #[arg(long, conflicts_with = "reset")]
     dry_run: bool,
+
+    /// Reset to the pre-scramble state (undo the last scramble)
+    #[arg(long)]
+    reset: bool,
+
+    /// Skip pre-commit and commit-msg hooks
+    #[arg(long, conflicts_with = "reset")]
+    no_verify: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -47,26 +62,104 @@ fn main() {
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let git = Git::new();
+
+    // Handle reset command
+    if cli.reset {
+        return run_reset(&git);
+    }
+
+    // Run the scramble
     let editor = SystemEditor::new();
+    run_scramble(&git, &editor, cli)
+}
 
-    // Determine the range
-    let (base, head) = parse_range(&git, cli.range.as_deref())?;
-    println!("Scrambling commits from {}..{}", &base[..8.min(base.len())], &head[..8.min(head.len())]);
+/// Reset to pre-scramble state
+fn run_reset<G: GitOps>(git: &G) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if we have a saved state
+    if !git.has_pre_scramble_head() {
+        return Err("No pre-scramble state found. Nothing to reset.".into());
+    }
 
-    // Save original HEAD for potential abort
-    let original_head = git.get_head()?;
+    let pre_scramble_head = git.get_pre_scramble_head()?;
+    let current_head = git.get_head()?;
 
-    // Read commits and hunks
-    let source_commits = git.read_commits(&base, &head)?;
     println!(
-        "Found {} commits to reorganize",
-        source_commits.len()
+        "Resetting from {} to pre-scramble state {}",
+        &current_head[..8.min(current_head.len())],
+        &pre_scramble_head[..8.min(pre_scramble_head.len())]
     );
 
-    let hunks = read_all_hunks(&git, &source_commits)?;
-    println!("Parsed {} hunks across all commits", hunks.len());
+    // Hard reset to pre-scramble state
+    git.reset_hard(&pre_scramble_head)?;
 
-    // Choose reorganizer
+    // Clear the saved state
+    git.clear_pre_scramble_head()?;
+
+    println!("Successfully reset to pre-scramble state.");
+    println!(
+        "The saved pre-scramble ref ({}) has been cleared.",
+        PRE_SCRAMBLE_REF
+    );
+
+    Ok(())
+}
+
+/// Run the scramble operation
+fn run_scramble<G: GitOps, E: Editor>(
+    git: &G,
+    editor: &E,
+    cli: Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Determine the range
+    let (base, head) = parse_range(git, cli.range.as_deref(), cli.base.as_deref())?;
+    println!(
+        "Scrambling commits from {}..{}",
+        &base[..8.min(base.len())],
+        &head[..8.min(head.len())]
+    );
+
+    // Check if there's already a saved pre-scramble state
+    if git.has_pre_scramble_head() {
+        let saved = git.get_pre_scramble_head()?;
+        eprintln!(
+            "Warning: A pre-scramble state already exists ({})",
+            &saved[..8.min(saved.len())]
+        );
+        eprintln!("Run 'git-scramble --reset' to restore it, or it will be overwritten.");
+        eprintln!();
+    }
+
+    // Step 1: Read source commits (for metadata and file-to-commit mapping)
+    let source_commits = git.read_commits(&base, &head)?;
+    println!("Found {} commits to reorganize", source_commits.len());
+
+    // Step 2: Build file-to-commits mapping (which commits touched which files)
+    let (file_to_commits, new_files_to_commits) = build_file_to_commits_map(git, &source_commits)?;
+
+    if cli.dry_run {
+        // For dry-run, we need to read hunks from source commits since we won't reset
+        let hunks = read_hunks_from_source_commits(git, &source_commits)?;
+        show_dry_run_plan(git, &source_commits, &hunks, &cli)?;
+        return Ok(());
+    }
+
+    // Step 3: Save pre-scramble HEAD before making any changes
+    git.save_pre_scramble_head()?;
+    println!(
+        "Saved pre-scramble state to {} (use --reset to restore)",
+        PRE_SCRAMBLE_REF
+    );
+
+    // Step 4: Reset to base (unstage everything to working tree)
+    println!("Resetting to {}...", &base[..8.min(base.len())]);
+    git.reset_to(&base)?;
+
+    // Step 5: Parse hunks from working tree diff (all relative to base)
+    let diff_output = git.get_working_tree_diff()?;
+    let hunks = parse_diff_with_commit_mapping(&diff_output, &file_to_commits)?;
+    println!("Parsed {} hunks from working tree", hunks.len());
+
+    // Step 6: Choose reorganizer and plan
     let reorganizer: Box<dyn Reorganizer> = match cli.strategy {
         Strategy::Preserve => Box::new(PreserveOriginal),
         Strategy::ByFile => Box::new(GroupByFile),
@@ -87,59 +180,81 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             hunk_count
         );
     }
-
-    if cli.dry_run {
-        println!("\n--dry-run specified, not making any changes.");
-        return Ok(());
-    }
-
     println!();
 
-    // Reset to base
-    println!("Resetting to {}...", &base[..8.min(base.len())]);
-    git.reset_to(&base)?;
-
-    // Create each commit
-    let result = create_commits(&git, &editor, &hunks, &planned_commits);
+    // Step 7: Create each commit
+    let result = create_commits(git, editor, &hunks, &planned_commits, &new_files_to_commits, cli.no_verify);
 
     if let Err(e) = result {
         eprintln!("\nError during commit creation: {}", e);
-        eprintln!("Restoring original state...");
-        git.reset_hard(&original_head)?;
+        eprintln!("Restoring pre-scramble state...");
+        let pre_scramble = git.get_pre_scramble_head()?;
+        git.reset_hard(&pre_scramble)?;
+        git.clear_pre_scramble_head()?;
         return Err(e);
     }
 
-    println!("\nDone! Successfully created {} commits.", planned_commits.len());
+    println!(
+        "\nDone! Successfully created {} commits.",
+        planned_commits.len()
+    );
+    println!("To undo this scramble, run: git-scramble --reset");
+
     Ok(())
 }
 
-/// Parse the range argument or auto-detect
-fn parse_range<G: GitOps>(git: &G, range: Option<&str>) -> Result<(String, String), Box<dyn std::error::Error>> {
-    match range {
-        Some(r) => {
-            // Parse "base..head" format
-            let parts: Vec<&str> = r.split("..").collect();
-            if parts.len() != 2 {
-                return Err(format!("Invalid range format: {}. Expected 'base..head'", r).into());
-            }
+/// Build a mapping of file paths to the commits that touched them
+/// Returns (file_to_commits, new_files_to_commits)
+fn build_file_to_commits_map<G: GitOps>(
+    git: &G,
+    source_commits: &[SourceCommit],
+) -> Result<(HashMap<String, Vec<String>>, HashMap<String, Vec<String>>), Box<dyn std::error::Error>> {
+    let mut file_to_commits: HashMap<String, Vec<String>> = HashMap::new();
+    let mut new_files_to_commits: HashMap<String, Vec<String>> = HashMap::new();
 
-            // Resolve refs to SHAs
-            let base = git.resolve_ref(parts[0])?;
-            let head = git.resolve_ref(parts[1])?;
-
-            Ok((base, head))
+    for commit in source_commits {
+        let files = git.get_files_changed_in_commit(&commit.sha)?;
+        for file in files {
+            file_to_commits
+                .entry(file)
+                .or_default()
+                .push(commit.sha.clone());
         }
-        None => {
-            // Auto-detect: find merge-base with main/master
-            let base = git.find_branch_base()?;
-            let head = git.get_head()?;
-            Ok((base, head))
+
+        // Also track newly added files
+        let new_files = git.get_new_files_in_commit(&commit.sha)?;
+        for file in new_files {
+            new_files_to_commits
+                .entry(file)
+                .or_default()
+                .push(commit.sha.clone());
         }
     }
+
+    Ok((file_to_commits, new_files_to_commits))
 }
 
-/// Read hunks from all source commits
-fn read_all_hunks<G: GitOps>(
+/// Parse diff output and map hunks to their likely source commits
+fn parse_diff_with_commit_mapping(
+    diff_output: &str,
+    file_to_commits: &HashMap<String, Vec<String>>,
+) -> Result<Vec<Hunk>, Box<dyn std::error::Error>> {
+    // First parse with empty source commits
+    let mut hunks = parse_diff(diff_output, &[], 0)?;
+
+    // Then update each hunk with likely source commits based on file path
+    for hunk in &mut hunks {
+        let file_path_str = hunk.file_path.to_string_lossy().to_string();
+        if let Some(commits) = file_to_commits.get(&file_path_str) {
+            hunk.likely_source_commits = commits.clone();
+        }
+    }
+
+    Ok(hunks)
+}
+
+/// Read hunks from source commits (used for dry-run before reset)
+fn read_hunks_from_source_commits<G: GitOps>(
     git: &G,
     source_commits: &[SourceCommit],
 ) -> Result<Vec<Hunk>, Box<dyn std::error::Error>> {
@@ -155,14 +270,90 @@ fn read_all_hunks<G: GitOps>(
     Ok(all_hunks)
 }
 
-/// Create all planned commits
+/// Show the dry-run plan without making changes
+fn show_dry_run_plan<G: GitOps>(
+    _git: &G,
+    source_commits: &[SourceCommit],
+    hunks: &[Hunk],
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Parsed {} hunks across all commits", hunks.len());
+
+    let reorganizer: Box<dyn Reorganizer> = match cli.strategy {
+        Strategy::Preserve => Box::new(PreserveOriginal),
+        Strategy::ByFile => Box::new(GroupByFile),
+        Strategy::Squash => Box::new(Squash),
+    };
+
+    println!("Using strategy: {}", reorganizer.name());
+
+    let planned_commits = reorganizer.reorganize(source_commits, hunks)?;
+    println!("\nPlanned {} new commits:", planned_commits.len());
+    for (i, commit) in planned_commits.iter().enumerate() {
+        let hunk_count = commit.hunk_ids.len();
+        println!(
+            "  {}. \"{}\" ({} hunks)",
+            i + 1,
+            commit.description.short,
+            hunk_count
+        );
+    }
+
+    println!("\n--dry-run specified, not making any changes.");
+    Ok(())
+}
+
+/// Parse the range argument, base branch, or auto-detect
+fn parse_range<G: GitOps>(
+    git: &G,
+    range: Option<&str>,
+    base_branch: Option<&str>,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    match (range, base_branch) {
+        // Explicit range specified (e.g., "main..HEAD")
+        (Some(r), None) => {
+            let parts: Vec<&str> = r.split("..").collect();
+            if parts.len() != 2 {
+                return Err(
+                    format!("Invalid range format: {}. Expected 'base..head'", r).into(),
+                );
+            }
+
+            let base = git.resolve_ref(parts[0])?;
+            let head = git.resolve_ref(parts[1])?;
+
+            Ok((base, head))
+        }
+        // Base branch specified (e.g., "--base develop")
+        (None, Some(branch)) => {
+            let base = git.find_merge_base(branch)?;
+            let head = git.get_head()?;
+            Ok((base, head))
+        }
+        // Auto-detect: find merge-base with main/master
+        (None, None) => {
+            let base = git.find_branch_base()?;
+            let head = git.get_head()?;
+            Ok((base, head))
+        }
+        // Both specified - shouldn't happen due to clap conflicts_with
+        (Some(_), Some(_)) => Err("Cannot specify both range and --base".into()),
+    }
+}
+
+/// Create all planned commits by applying hunks
 fn create_commits<G: GitOps, E: Editor>(
     git: &G,
     editor: &E,
     hunks: &[Hunk],
     planned_commits: &[PlannedCommit],
+    new_files_to_commits: &HashMap<String, Vec<String>>,
+    no_verify: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let total = planned_commits.len();
+
+    // Track which new files have been staged to avoid duplicates
+    let mut staged_new_files: HashSet<String> = HashSet::new();
 
     for (i, planned) in planned_commits.iter().enumerate() {
         println!("Creating commit {}/{}...", i + 1, total);
@@ -174,17 +365,47 @@ fn create_commits<G: GitOps, E: Editor>(
             .filter_map(|id| hunks.iter().find(|h| h.id == *id))
             .collect();
 
+        // Collect all source commits that contributed to this planned commit's hunks
+        let source_commits: HashSet<&String> = commit_hunks
+            .iter()
+            .flat_map(|h| &h.likely_source_commits)
+            .collect();
+
+        // Find new files that belong to this commit (their source commits overlap)
+        let new_files_for_commit: Vec<&String> = new_files_to_commits
+            .iter()
+            .filter(|(file, commits)| {
+                !staged_new_files.contains(*file)
+                    && commits.iter().any(|c| source_commits.contains(c))
+            })
+            .map(|(file, _)| file)
+            .collect();
+
         // Generate help text showing what's in this commit
-        let help_text = generate_commit_help(&commit_hunks);
+        let help_text = generate_commit_help(&commit_hunks, &new_files_for_commit);
 
         // Open editor for commit message
         let message = editor.edit(&planned.description.long, &help_text)?;
 
-        // Stage the hunks
+        // Stage all hunks for this commit (grouped by file)
         git.apply_hunks_to_index(&commit_hunks)?;
 
+        // Stage new files for this commit
+        if !new_files_for_commit.is_empty() {
+            let paths: Vec<&std::path::Path> = new_files_for_commit
+                .iter()
+                .map(|f| std::path::Path::new(f.as_str()))
+                .collect();
+            git.stage_files(&paths)?;
+
+            // Mark these files as staged
+            for file in &new_files_for_commit {
+                staged_new_files.insert((*file).clone());
+            }
+        }
+
         // Create the commit
-        let new_sha = git.commit(&message)?;
+        let new_sha = git.commit(&message, no_verify)?;
         println!("  Created commit {}", &new_sha[..8.min(new_sha.len())]);
     }
 
@@ -192,20 +413,46 @@ fn create_commits<G: GitOps, E: Editor>(
 }
 
 /// Generate help text for the commit editor
-fn generate_commit_help(hunks: &[&Hunk]) -> String {
-    use std::collections::BTreeSet;
-
+fn generate_commit_help(hunks: &[&Hunk], new_files: &[&String]) -> String {
     let mut lines = Vec::new();
     lines.push("Files in this commit:".to_string());
 
-    // Collect unique file paths
+    // Collect unique file paths from hunks
     let files: BTreeSet<_> = hunks.iter().map(|h| &h.file_path).collect();
     for file in &files {
         lines.push(format!("  {}", file.display()));
     }
 
+    // Show new files
+    if !new_files.is_empty() {
+        lines.push(String::new());
+        lines.push("New files:".to_string());
+        for file in new_files {
+            lines.push(format!("  {}", file));
+        }
+    }
+
     lines.push(String::new());
-    lines.push(format!("Total: {} hunks across {} files", hunks.len(), files.len()));
+    lines.push(format!(
+        "Total: {} hunks across {} files, {} new files",
+        hunks.len(),
+        files.len(),
+        new_files.len()
+    ));
+
+    // Show likely source commits for context
+    let all_source_commits: BTreeSet<_> = hunks
+        .iter()
+        .flat_map(|h| &h.likely_source_commits)
+        .collect();
+    if !all_source_commits.is_empty() {
+        lines.push(String::new());
+        lines.push("Likely source commits:".to_string());
+        for sha in all_source_commits {
+            lines.push(format!("  {}", &sha[..8.min(sha.len())]));
+        }
+    }
+
     lines.push(String::new());
     lines.push("Lines starting with '#' will be ignored.".to_string());
     lines.push("An empty message aborts the commit.".to_string());

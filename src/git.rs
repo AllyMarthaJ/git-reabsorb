@@ -21,12 +21,20 @@ pub enum GitError {
     NoCommitsInRange(String),
     #[error("Failed to parse diff: {0}")]
     DiffParseError(#[from] crate::diff_parser::DiffParseError),
+    #[error("No pre-scramble state saved. Run git-scramble first.")]
+    NoSavedState,
 }
+
+/// The ref name used to store the pre-scramble HEAD
+pub const PRE_SCRAMBLE_REF: &str = "refs/scramble/pre-scramble-head";
 
 /// Trait for git operations - allows mocking in tests
 pub trait GitOps {
-    /// Find the merge-base between current HEAD and main/master
+    /// Find the merge-base between current HEAD and main/master (auto-detect)
     fn find_branch_base(&self) -> Result<String, GitError>;
+
+    /// Find the merge-base between current HEAD and a specific branch
+    fn find_merge_base(&self, branch: &str) -> Result<String, GitError>;
 
     /// Get the current HEAD SHA
     fn get_head(&self) -> Result<String, GitError>;
@@ -40,6 +48,18 @@ pub trait GitOps {
     /// Read hunks from a commit's diff against its parent
     fn read_hunks(&self, commit_sha: &str, hunk_id_start: usize) -> Result<Vec<Hunk>, GitError>;
 
+    /// Get the raw diff output between HEAD and working tree
+    fn get_working_tree_diff(&self) -> Result<String, GitError>;
+
+    /// Get list of files changed in a specific commit
+    fn get_files_changed_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError>;
+
+    /// Get list of newly added files in a specific commit (files that didn't exist before)
+    fn get_new_files_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError>;
+
+    /// Apply a single hunk to the index using git apply
+    fn apply_hunk_to_index(&self, hunk: &Hunk) -> Result<(), GitError>;
+
     /// Reset to a ref (mixed reset - unstages to working tree)
     fn reset_to(&self, ref_name: &str) -> Result<(), GitError>;
 
@@ -49,8 +69,33 @@ pub trait GitOps {
     /// Apply hunks to the index (stage them)
     fn apply_hunks_to_index(&self, hunks: &[&Hunk]) -> Result<(), GitError>;
 
+    /// Stage all changes in the working tree (git add -A)
+    fn stage_all(&self) -> Result<(), GitError>;
+
+    /// Stage specific files (git add <files>)
+    fn stage_files(&self, files: &[&Path]) -> Result<(), GitError>;
+
+    /// Checkout specific paths from a commit (git checkout <sha> -- <paths>)
+    /// This also stages the files.
+    fn checkout_paths_from_commit(&self, commit_sha: &str, paths: &[&Path]) -> Result<(), GitError>;
+
+    /// Remove files from the index and working tree (git rm)
+    fn remove_files(&self, files: &[&Path]) -> Result<(), GitError>;
+
     /// Create a commit with the currently staged changes
-    fn commit(&self, message: &str) -> Result<String, GitError>;
+    fn commit(&self, message: &str, no_verify: bool) -> Result<String, GitError>;
+
+    /// Save the current HEAD as the pre-scramble state
+    fn save_pre_scramble_head(&self) -> Result<(), GitError>;
+
+    /// Get the saved pre-scramble HEAD, if any
+    fn get_pre_scramble_head(&self) -> Result<String, GitError>;
+
+    /// Check if a pre-scramble state is saved
+    fn has_pre_scramble_head(&self) -> bool;
+
+    /// Clear the saved pre-scramble state
+    fn clear_pre_scramble_head(&self) -> Result<(), GitError>;
 }
 
 /// Real implementation of GitOps that calls git commands
@@ -114,6 +159,11 @@ impl GitOps for Git {
         ))
     }
 
+    fn find_merge_base(&self, branch: &str) -> Result<String, GitError> {
+        let output = self.run_git(&["merge-base", branch, "HEAD"])?;
+        Ok(output.trim().to_string())
+    }
+
     fn get_head(&self) -> Result<String, GitError> {
         let output = self.run_git(&["rev-parse", "HEAD"])?;
         Ok(output.trim().to_string())
@@ -157,8 +207,53 @@ impl GitOps for Git {
         // Get diff for this commit against its parent
         let diff_output = self.run_git(&["show", "--format=", "-p", commit_sha])?;
 
-        let hunks = parse_diff(&diff_output, commit_sha, hunk_id_start)?;
+        let hunks = parse_diff(&diff_output, &[commit_sha.to_string()], hunk_id_start)?;
         Ok(hunks)
+    }
+
+    fn get_working_tree_diff(&self) -> Result<String, GitError> {
+        // Get diff between HEAD and working tree (unstaged changes)
+        // We use --no-color to ensure clean output
+        let output = self.run_git(&["diff", "HEAD", "--no-color"])?;
+        Ok(output)
+    }
+
+    fn get_files_changed_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError> {
+        let output = self.run_git(&["diff-tree", "--no-commit-id", "--name-only", "-r", commit_sha])?;
+        Ok(output.lines().map(|s| s.to_string()).collect())
+    }
+
+    fn get_new_files_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError> {
+        // Use --name-status to get status codes (A = added, M = modified, D = deleted)
+        let output = self.run_git(&["diff-tree", "--no-commit-id", "--name-status", "-r", commit_sha])?;
+        let mut new_files = Vec::new();
+        for line in output.lines() {
+            // Format is "A\tfilename" or "M\tfilename" etc.
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() == 2 && parts[0] == "A" {
+                new_files.push(parts[1].to_string());
+            }
+        }
+        Ok(new_files)
+    }
+
+    fn apply_hunk_to_index(&self, hunk: &Hunk) -> Result<(), GitError> {
+        let patch = hunk.to_full_patch();
+
+        // Write patch to temp file
+        let mut temp_file = tempfile::NamedTempFile::new()?;
+        temp_file.write_all(patch.as_bytes())?;
+        temp_file.flush()?;
+
+        // Apply patch to index
+        self.run_git(&[
+            "apply",
+            "--cached",
+            "--unidiff-zero",
+            temp_file.path().to_str().unwrap(),
+        ])?;
+
+        Ok(())
     }
 
     fn reset_to(&self, ref_name: &str) -> Result<(), GitError> {
@@ -186,7 +281,10 @@ impl GitOps for Git {
         }
 
         // For each file, create a patch and apply it
-        for (file_path, file_hunks) in hunks_by_file {
+        for (file_path, mut file_hunks) in hunks_by_file {
+            // Sort hunks by line number - git expects hunks in order
+            file_hunks.sort_by_key(|h| h.old_start);
+
             let patch = create_patch_for_file(file_path, &file_hunks);
 
             // Write patch to temp file and apply
@@ -218,16 +316,92 @@ impl GitOps for Git {
         Ok(())
     }
 
-    fn commit(&self, message: &str) -> Result<String, GitError> {
+    fn stage_all(&self) -> Result<(), GitError> {
+        self.run_git(&["add", "-A"])?;
+        Ok(())
+    }
+
+    fn stage_files(&self, files: &[&Path]) -> Result<(), GitError> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let mut args = vec!["add", "--"];
+        for file in files {
+            args.push(file.to_str().unwrap());
+        }
+        self.run_git(&args)?;
+        Ok(())
+    }
+
+    fn checkout_paths_from_commit(&self, commit_sha: &str, paths: &[&Path]) -> Result<(), GitError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let mut args = vec!["checkout", commit_sha, "--"];
+        for path in paths {
+            args.push(path.to_str().unwrap());
+        }
+        self.run_git(&args)?;
+        Ok(())
+    }
+
+    fn remove_files(&self, files: &[&Path]) -> Result<(), GitError> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let mut args = vec!["rm", "-f", "--"];
+        for file in files {
+            args.push(file.to_str().unwrap());
+        }
+        // Ignore errors - file might not exist
+        let _ = self.run_git(&args);
+        Ok(())
+    }
+
+    fn commit(&self, message: &str, no_verify: bool) -> Result<String, GitError> {
         // Write message to temp file to handle multiline messages
         let mut temp_file = tempfile::NamedTempFile::new()?;
         temp_file.write_all(message.as_bytes())?;
         temp_file.flush()?;
 
-        self.run_git(&["commit", "-F", temp_file.path().to_str().unwrap()])?;
+        let mut args = vec!["commit", "-F", temp_file.path().to_str().unwrap()];
+        if no_verify {
+            args.push("--no-verify");
+        }
+        self.run_git(&args)?;
 
         // Get the new commit SHA
         self.get_head()
+    }
+
+    fn save_pre_scramble_head(&self) -> Result<(), GitError> {
+        let head = self.get_head()?;
+        self.run_git(&["update-ref", PRE_SCRAMBLE_REF, &head])?;
+        Ok(())
+    }
+
+    fn get_pre_scramble_head(&self) -> Result<String, GitError> {
+        let result = self.run_git(&["rev-parse", PRE_SCRAMBLE_REF]);
+        match result {
+            Ok(sha) => Ok(sha.trim().to_string()),
+            Err(_) => Err(GitError::NoSavedState),
+        }
+    }
+
+    fn has_pre_scramble_head(&self) -> bool {
+        self.run_git(&["rev-parse", "--verify", PRE_SCRAMBLE_REF])
+            .is_ok()
+    }
+
+    fn clear_pre_scramble_head(&self) -> Result<(), GitError> {
+        // Only try to delete if it exists
+        if self.has_pre_scramble_head() {
+            self.run_git(&["update-ref", "-d", PRE_SCRAMBLE_REF])?;
+        }
+        Ok(())
     }
 }
 
@@ -270,7 +444,7 @@ mod tests {
                 DiffLine::Context("    println!(\"World\");".to_string()),
                 DiffLine::Context("}".to_string()),
             ],
-            source_commit_sha: "abc123".to_string(),
+            likely_source_commits: vec!["abc123".to_string()],
         };
 
         let patch = create_patch_for_file(Path::new("test.rs"), &[&hunk]);
