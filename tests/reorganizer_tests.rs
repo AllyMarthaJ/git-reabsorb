@@ -95,11 +95,21 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
 }
 
 fn uuid() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
-    format!("{}-{}", duration.as_secs(), duration.subsec_nanos())
+    let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{}-{}-{}",
+        duration.as_secs(),
+        duration.subsec_nanos(),
+        suffix
+    )
 }
 
 // ============================================================================
@@ -613,6 +623,7 @@ fn test_empty_file_creation() {
 #[test]
 fn test_save_and_get_pre_scramble_head() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -620,22 +631,23 @@ fn test_save_and_get_pre_scramble_head() {
     let initial_head = repo.commit("Initial commit");
 
     // Initially, no pre-scramble state should exist
-    assert!(!repo.git.has_pre_scramble_head());
+    assert!(!repo.git.has_pre_scramble_head(&ref_name));
 
     // Save the pre-scramble state
-    repo.git.save_pre_scramble_head().unwrap();
+    repo.git.save_pre_scramble_head(&ref_name).unwrap();
 
     // Now it should exist
-    assert!(repo.git.has_pre_scramble_head());
+    assert!(repo.git.has_pre_scramble_head(&ref_name));
 
     // And it should match the current HEAD
-    let saved = repo.git.get_pre_scramble_head().unwrap();
+    let saved = repo.git.get_pre_scramble_head(&ref_name).unwrap();
     assert_eq!(saved, initial_head);
 }
 
 #[test]
 fn test_clear_pre_scramble_head() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -643,19 +655,20 @@ fn test_clear_pre_scramble_head() {
     repo.commit("Initial commit");
 
     // Save and verify
-    repo.git.save_pre_scramble_head().unwrap();
-    assert!(repo.git.has_pre_scramble_head());
+    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    assert!(repo.git.has_pre_scramble_head(&ref_name));
 
     // Clear it
-    repo.git.clear_pre_scramble_head().unwrap();
+    repo.git.clear_pre_scramble_head(&ref_name).unwrap();
 
     // Should no longer exist
-    assert!(!repo.git.has_pre_scramble_head());
+    assert!(!repo.git.has_pre_scramble_head(&ref_name));
 }
 
 #[test]
 fn test_clear_nonexistent_pre_scramble_head() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -663,14 +676,15 @@ fn test_clear_nonexistent_pre_scramble_head() {
     repo.commit("Initial commit");
 
     // Clearing when none exists should not error
-    assert!(!repo.git.has_pre_scramble_head());
-    repo.git.clear_pre_scramble_head().unwrap();
-    assert!(!repo.git.has_pre_scramble_head());
+    assert!(!repo.git.has_pre_scramble_head(&ref_name));
+    repo.git.clear_pre_scramble_head(&ref_name).unwrap();
+    assert!(!repo.git.has_pre_scramble_head(&ref_name));
 }
 
 #[test]
 fn test_get_pre_scramble_head_when_none_exists() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -678,14 +692,15 @@ fn test_get_pre_scramble_head_when_none_exists() {
     repo.commit("Initial commit");
 
     // Should return error when no pre-scramble state exists
-    assert!(!repo.git.has_pre_scramble_head());
-    let result = repo.git.get_pre_scramble_head();
+    assert!(!repo.git.has_pre_scramble_head(&ref_name));
+    let result = repo.git.get_pre_scramble_head(&ref_name);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_pre_scramble_head_survives_new_commits() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -693,7 +708,7 @@ fn test_pre_scramble_head_survives_new_commits() {
     let initial_head = repo.commit("Initial commit");
 
     // Save pre-scramble state
-    repo.git.save_pre_scramble_head().unwrap();
+    repo.git.save_pre_scramble_head(&ref_name).unwrap();
 
     // Create more commits
     repo.write_file("src/main.rs", "fn main() {}\n");
@@ -705,13 +720,14 @@ fn test_pre_scramble_head_survives_new_commits() {
     repo.commit("Add lib.rs");
 
     // Pre-scramble state should still point to the original HEAD
-    let saved = repo.git.get_pre_scramble_head().unwrap();
+    let saved = repo.git.get_pre_scramble_head(&ref_name).unwrap();
     assert_eq!(saved, initial_head);
 }
 
 #[test]
 fn test_reset_to_pre_scramble_head() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -719,7 +735,7 @@ fn test_reset_to_pre_scramble_head() {
     let initial_head = repo.commit("Initial commit");
 
     // Save pre-scramble state
-    repo.git.save_pre_scramble_head().unwrap();
+    repo.git.save_pre_scramble_head(&ref_name).unwrap();
 
     // Create more commits
     repo.write_file("src/main.rs", "fn main() {}\n");
@@ -734,19 +750,20 @@ fn test_reset_to_pre_scramble_head() {
     assert_eq!(repo.git.get_head().unwrap(), final_head);
 
     // Reset to pre-scramble state
-    let pre_scramble = repo.git.get_pre_scramble_head().unwrap();
+    let pre_scramble = repo.git.get_pre_scramble_head(&ref_name).unwrap();
     repo.git.reset_hard(&pre_scramble).unwrap();
 
     // Verify we're back at the original HEAD
     assert_eq!(repo.git.get_head().unwrap(), initial_head);
 
     // Clean up the ref
-    repo.git.clear_pre_scramble_head().unwrap();
+    repo.git.clear_pre_scramble_head(&ref_name).unwrap();
 }
 
 #[test]
 fn test_overwrite_pre_scramble_head() {
     let repo = TestRepo::new();
+    let ref_name = test_pre_scramble_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -754,8 +771,11 @@ fn test_overwrite_pre_scramble_head() {
     let first_head = repo.commit("Initial commit");
 
     // Save pre-scramble state
-    repo.git.save_pre_scramble_head().unwrap();
-    assert_eq!(repo.git.get_pre_scramble_head().unwrap(), first_head);
+    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    assert_eq!(
+        repo.git.get_pre_scramble_head(&ref_name).unwrap(),
+        first_head
+    );
 
     // Create another commit
     repo.write_file("src/main.rs", "fn main() {}\n");
@@ -763,10 +783,13 @@ fn test_overwrite_pre_scramble_head() {
     let second_head = repo.commit("Add main.rs");
 
     // Overwrite pre-scramble state
-    repo.git.save_pre_scramble_head().unwrap();
+    repo.git.save_pre_scramble_head(&ref_name).unwrap();
 
     // Should now point to the second HEAD
-    assert_eq!(repo.git.get_pre_scramble_head().unwrap(), second_head);
+    assert_eq!(
+        repo.git.get_pre_scramble_head(&ref_name).unwrap(),
+        second_head
+    );
 }
 
 // ============================================================================
@@ -1391,6 +1414,12 @@ fn test_apply_hunks_from_multiple_files() {
 
 use git_scramble::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit};
 use git_scramble::reorganize::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
+
+const TEST_REF_NAMESPACE: &str = "test-branch";
+
+fn test_pre_scramble_ref() -> String {
+    git_scramble::git::pre_scramble_ref_for(TEST_REF_NAMESPACE)
+}
 use std::collections::HashMap;
 
 #[test]
@@ -1447,6 +1476,7 @@ fn test_saved_plan_creation_and_roundtrip() {
 #[test]
 fn test_save_and_load_plan() {
     let repo = TestRepo::new();
+    let namespace = format!("plan-{}", uuid());
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -1480,19 +1510,19 @@ fn test_save_and_load_plan() {
     );
 
     // Save plan
-    let path = save_plan(&plan).unwrap();
+    let path = save_plan(&namespace, &plan).unwrap();
     assert!(path.exists());
-    assert!(has_saved_plan());
+    assert!(has_saved_plan(&namespace));
 
     // Load plan
-    let loaded = load_plan().unwrap();
+    let loaded = load_plan(&namespace).unwrap();
     assert_eq!(loaded.strategy, "by-file");
     assert_eq!(loaded.base_sha, base);
     assert_eq!(loaded.commits.len(), 1);
 
     // Clean up
-    delete_plan().unwrap();
-    assert!(!has_saved_plan());
+    delete_plan(&namespace).unwrap();
+    assert!(!has_saved_plan(&namespace));
 }
 
 #[test]
@@ -1563,6 +1593,7 @@ fn test_plan_progress_tracking() {
 #[test]
 fn test_plan_with_new_hunks() {
     let repo = TestRepo::new();
+    let namespace = format!("plan-{}", uuid());
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -1603,8 +1634,8 @@ fn test_plan_with_new_hunks() {
     );
 
     // Save and reload
-    save_plan(&plan).unwrap();
-    let loaded = load_plan().unwrap();
+    save_plan(&namespace, &plan).unwrap();
+    let loaded = load_plan(&namespace).unwrap();
 
     // Verify new hunks are preserved
     assert_eq!(loaded.new_hunks.len(), 1);
@@ -1616,12 +1647,13 @@ fn test_plan_with_new_hunks() {
     assert_eq!(restored[0].changes.len(), 2);
 
     // Clean up
-    delete_plan().unwrap();
+    delete_plan(&namespace).unwrap();
 }
 
 #[test]
 fn test_plan_stores_file_mappings() {
     let repo = TestRepo::new();
+    let namespace = format!("plan-{}", uuid());
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -1661,8 +1693,8 @@ fn test_plan_stores_file_mappings() {
     );
 
     // Save and reload
-    save_plan(&plan).unwrap();
-    let loaded = load_plan().unwrap();
+    save_plan(&namespace, &plan).unwrap();
+    let loaded = load_plan(&namespace).unwrap();
 
     // Verify mappings are restored
     let restored_file_to_commits = loaded.get_file_to_commits();
@@ -1678,5 +1710,5 @@ fn test_plan_stores_file_mappings() {
     assert_eq!(restored_new_files.get("src/main.rs"), Some(&vec![head]));
 
     // Clean up
-    delete_plan().unwrap();
+    delete_plan(&namespace).unwrap();
 }

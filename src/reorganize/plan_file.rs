@@ -18,7 +18,7 @@ pub enum PlanFileError {
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(String),
-    #[error("No saved plan found. Run 'git-scramble --plan-only' first.")]
+    #[error("No saved plan found. Run 'git scramble plan --save-plan' first.")]
     NoPlan,
 }
 
@@ -228,7 +228,7 @@ impl From<&SavedDiffLine> for DiffLine {
     }
 }
 
-fn candidate_dirs() -> Vec<PathBuf> {
+fn base_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(dir) = env::var("GIT_SCRAMBLE_PLAN_DIR") {
         if !dir.is_empty() {
@@ -240,8 +240,15 @@ fn candidate_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn existing_plan_path() -> Option<PathBuf> {
-    for dir in candidate_dirs() {
+fn namespace_dirs(namespace: &str) -> Vec<PathBuf> {
+    base_dirs()
+        .into_iter()
+        .map(|dir| dir.join(namespace))
+        .collect()
+}
+
+fn existing_plan_path(namespace: &str) -> Option<PathBuf> {
+    for dir in namespace_dirs(namespace) {
         let path = dir.join(PLAN_FILE);
         if path.exists() {
             return Some(path);
@@ -250,16 +257,17 @@ fn existing_plan_path() -> Option<PathBuf> {
     None
 }
 
-pub fn plan_file_path() -> PathBuf {
-    existing_plan_path().unwrap_or_else(|| PathBuf::from(SCRAMBLE_DIR).join(PLAN_FILE))
+pub fn plan_file_path(namespace: &str) -> PathBuf {
+    existing_plan_path(namespace)
+        .unwrap_or_else(|| PathBuf::from(SCRAMBLE_DIR).join(namespace).join(PLAN_FILE))
 }
 
-pub fn save_plan(plan: &SavedPlan) -> Result<PathBuf, PlanFileError> {
+pub fn save_plan(namespace: &str, plan: &SavedPlan) -> Result<PathBuf, PlanFileError> {
     let json =
         serde_json::to_string_pretty(plan).map_err(|e| PlanFileError::Json(e.to_string()))?;
     let mut last_err: Option<std::io::Error> = None;
 
-    for dir in candidate_dirs() {
+    for dir in namespace_dirs(namespace) {
         if let Err(e) = fs::create_dir_all(&dir) {
             last_err = Some(e);
             continue;
@@ -279,20 +287,20 @@ pub fn save_plan(plan: &SavedPlan) -> Result<PathBuf, PlanFileError> {
     })))
 }
 
-pub fn load_plan() -> Result<SavedPlan, PlanFileError> {
-    if let Some(path) = existing_plan_path() {
+pub fn load_plan(namespace: &str) -> Result<SavedPlan, PlanFileError> {
+    if let Some(path) = existing_plan_path(namespace) {
         let json = fs::read_to_string(&path)?;
         return serde_json::from_str(&json).map_err(|e| PlanFileError::Json(e.to_string()));
     }
     Err(PlanFileError::NoPlan)
 }
 
-pub fn has_saved_plan() -> bool {
-    existing_plan_path().is_some()
+pub fn has_saved_plan(namespace: &str) -> bool {
+    existing_plan_path(namespace).is_some()
 }
 
-pub fn delete_plan() -> Result<(), PlanFileError> {
-    if let Some(path) = existing_plan_path() {
+pub fn delete_plan(namespace: &str) -> Result<(), PlanFileError> {
+    if let Some(path) = existing_plan_path(namespace) {
         if path.exists() {
             fs::remove_file(path)?;
         }
