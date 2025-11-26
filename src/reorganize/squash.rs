@@ -14,10 +14,8 @@ impl Reorganizer for Squash {
             return Err(ReorganizeError::NoHunks);
         }
 
-        // Collect all hunk IDs
         let hunk_ids: Vec<_> = hunks.iter().map(|h| h.id).collect();
 
-        // Build description from all source commits
         let short = if source_commits.len() == 1 {
             source_commits[0].short_description.clone()
         } else {

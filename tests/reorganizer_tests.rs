@@ -8,14 +8,12 @@ use git_scramble::git::{Git, GitOps};
 use git_scramble::models::Hunk;
 use git_scramble::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
 
-/// A temporary git repository for testing
 struct TestRepo {
     path: PathBuf,
     git: Git,
 }
 
 impl TestRepo {
-    /// Create a new temporary git repository
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("git-scramble-test-{}", uuid()));
         fs::create_dir_all(&path).expect("Failed to create temp dir");
@@ -30,7 +28,6 @@ impl TestRepo {
         Self { path, git }
     }
 
-    /// Write a file and return its path
     fn write_file(&self, name: &str, content: &str) -> PathBuf {
         let file_path = self.path.join(name);
         if let Some(parent) = file_path.parent() {
@@ -40,18 +37,15 @@ impl TestRepo {
         file_path
     }
 
-    /// Stage all changes
     fn stage_all(&self) {
         run_git(&self.path, &["add", "-A"]);
     }
 
-    /// Create a commit with the given message
     fn commit(&self, message: &str) -> String {
         run_git(&self.path, &["commit", "-m", message]);
         self.git.get_head().expect("Failed to get HEAD")
     }
 
-    /// Read commits in a range
     fn read_commits(
         &self,
         base: &str,
@@ -62,7 +56,6 @@ impl TestRepo {
             .expect("Failed to read commits")
     }
 
-    /// Read all hunks from commits
     fn read_hunks(&self, commits: &[git_scramble::models::SourceCommit]) -> Vec<Hunk> {
         let mut all_hunks = Vec::new();
         let mut hunk_id = 0;
@@ -80,12 +73,10 @@ impl TestRepo {
 
 impl Drop for TestRepo {
     fn drop(&mut self) {
-        // Clean up temp directory
         let _ = fs::remove_dir_all(&self.path);
     }
 }
 
-/// Run a git command in the given directory
 fn run_git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(dir)
@@ -104,7 +95,6 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
-/// Generate a simple unique ID
 fn uuid() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let duration = SystemTime::now()

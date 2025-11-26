@@ -4,15 +4,11 @@ use std::process::Command;
 
 use super::types::LlmError;
 
-/// Trait for LLM completion
 pub trait LlmClient {
-    /// Send a prompt and get a completion response
     fn complete(&self, prompt: &str) -> Result<String, LlmError>;
 }
 
-/// Client that invokes the local `claude` CLI
 pub struct ClaudeCliClient {
-    /// Model to use (e.g., "sonnet", "opus")
     pub model: Option<String>,
 }
 
@@ -36,7 +32,6 @@ impl Default for ClaudeCliClient {
 
 impl LlmClient for ClaudeCliClient {
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        // Invoke: claude --print -p "prompt"
         let mut args = vec!["--print", "-p", prompt];
 
         let model_str;
@@ -68,7 +63,6 @@ impl LlmClient for ClaudeCliClient {
 mod tests {
     use super::*;
 
-    /// Mock client for testing
     #[allow(dead_code)]
     pub struct MockLlmClient {
         pub response: String,

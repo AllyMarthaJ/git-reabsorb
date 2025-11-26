@@ -18,7 +18,6 @@ impl Reorganizer for GroupByFile {
             return Err(ReorganizeError::NoHunks);
         }
 
-        // Group hunks by file path (BTreeMap for consistent ordering)
         let mut hunks_by_file: BTreeMap<&PathBuf, Vec<HunkId>> = BTreeMap::new();
         for hunk in hunks {
             hunks_by_file
@@ -27,7 +26,6 @@ impl Reorganizer for GroupByFile {
                 .push(hunk.id);
         }
 
-        // Create one commit per file
         let mut planned = Vec::new();
         for (file_path, hunk_ids) in hunks_by_file {
             let file_name = file_path

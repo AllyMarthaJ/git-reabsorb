@@ -17,11 +17,8 @@ impl Reorganizer for PreserveOriginal {
             return Err(ReorganizeError::NoHunks);
         }
 
-        // Group hunks by their likely source commits
-        // A hunk may match multiple source commits, so we assign it to the first matching one
         let mut hunks_by_commit: HashMap<&str, Vec<HunkId>> = HashMap::new();
         for hunk in hunks {
-            // Find the first source commit that this hunk likely came from
             let source_sha = source_commits
                 .iter()
                 .find(|sc| hunk.likely_source_commits.contains(&sc.sha))
@@ -30,7 +27,6 @@ impl Reorganizer for PreserveOriginal {
             if let Some(sha) = source_sha {
                 hunks_by_commit.entry(sha).or_default().push(hunk.id);
             } else if let Some(first_likely) = hunk.likely_source_commits.first() {
-                // Fallback: use the first likely source commit
                 hunks_by_commit
                     .entry(first_likely.as_str())
                     .or_default()
@@ -38,7 +34,6 @@ impl Reorganizer for PreserveOriginal {
             }
         }
 
-        // Create planned commits in original order
         let mut planned = Vec::new();
         for source in source_commits {
             if let Some(hunk_ids) = hunks_by_commit.get(source.sha.as_str()) {

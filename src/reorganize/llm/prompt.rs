@@ -4,7 +4,6 @@ use crate::models::{DiffLine, Hunk, SourceCommit};
 
 use super::types::{CommitContext, HunkContext, LlmContext};
 
-/// Build the full context to send to the LLM
 pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmContext {
     let commit_contexts: Vec<CommitContext> = source_commits
         .iter()
@@ -32,7 +31,6 @@ pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmCont
     }
 }
 
-/// Format diff lines as a string
 fn format_diff_lines(lines: &[DiffLine]) -> String {
     lines
         .iter()
@@ -45,7 +43,6 @@ fn format_diff_lines(lines: &[DiffLine]) -> String {
         .join("\n")
 }
 
-/// Build the prompt to send to the LLM
 pub fn build_prompt(context: &LlmContext) -> String {
     let mut prompt = String::new();
 

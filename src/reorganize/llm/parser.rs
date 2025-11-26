@@ -6,11 +6,7 @@ use crate::models::Hunk;
 
 use super::types::{ChangeSpec, LlmError, LlmPlan};
 
-/// Extract JSON from the LLM response
-///
-/// The LLM might include markdown code fences or other text around the JSON.
 pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
-    // Try to find JSON in code fences first
     let json_str = if let Some(start) = response.find("```json") {
         let content_start = start + 7;
         let end = response[content_start..]
@@ -44,7 +40,6 @@ pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
         .map_err(|e| LlmError::ParseError(format!("{}: {}", e, truncate(json_str, 200))))
 }
 
-/// Truncate a string for error messages
 fn truncate(s: &str, max_len: usize) -> &str {
     if s.len() > max_len {
         &s[..max_len]
@@ -53,7 +48,6 @@ fn truncate(s: &str, max_len: usize) -> &str {
     }
 }
 
-/// Validate the LLM plan against the input hunks
 pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
     let valid_hunk_ids: HashSet<usize> = hunks.iter().map(|h| h.id.0).collect();
     let mut assigned_hunks: HashSet<usize> = HashSet::new();
@@ -88,7 +82,6 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
                             hunk_id
                         )));
                     }
-                    // Validate line indices
                     let hunk = hunks.iter().find(|h| h.id.0 == *hunk_id).unwrap();
                     let max_line = hunk.lines.len();
                     for &line in lines {
@@ -99,8 +92,6 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
                             });
                         }
                     }
-                    // Track that this hunk was partially assigned
-                    // (We allow partial assignments of the same hunk to different commits)
                 }
                 ChangeSpec::Raw { file_path, diff } => {
                     if file_path.is_empty() {
@@ -118,7 +109,6 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
         }
     }
 
-    // Check that all hunks were assigned - error if not so we can retry
     let unassigned: Vec<_> = valid_hunk_ids
         .difference(&assigned_hunks)
         .copied()

@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use crate::models::{DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
-/// LLM-based reorganizer that uses AI to intelligently group changes
 pub struct LlmReorganizer {
     client: Box<dyn LlmClient>,
     max_retries: usize,
@@ -32,155 +31,78 @@ impl LlmReorganizer {
         self
     }
 
-    /// Invoke the LLM with retry logic
-    fn invoke_with_retry(
-        &self,
-        source_commits: &[SourceCommit],
-        hunks: &[Hunk],
-    ) -> Result<LlmPlan, LlmError> {
-        let context = prompt::build_context(source_commits, hunks);
-        let prompt_text = prompt::build_prompt(&context);
-
+    fn invoke_with_retry(&self, source_commits: &[SourceCommit], hunks: &[Hunk]) -> Result<LlmPlan, LlmError> {
+        let prompt_text = prompt::build_prompt(&prompt::build_context(source_commits, hunks));
         let mut last_error = None;
 
         for attempt in 1..=self.max_retries {
             eprintln!("LLM attempt {}/{}...", attempt, self.max_retries);
-
             match self.client.complete(&prompt_text) {
-                Ok(response) => {
-                    match parser::extract_json(&response) {
-                        Ok(plan) => {
-                            match parser::validate_plan(&plan, hunks) {
-                                Ok(()) => return Ok(plan),
-                                Err(e) => {
-                                    eprintln!("Validation error: {}", e);
-                                    last_error = Some(e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Parse error: {}", e);
-                            last_error = Some(e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Client error: {}", e);
-                    last_error = Some(e);
-                }
+                Ok(response) => match parser::extract_json(&response) {
+                    Ok(plan) => match parser::validate_plan(&plan, hunks) {
+                        Ok(()) => return Ok(plan),
+                        Err(e) => { eprintln!("Validation error: {}", e); last_error = Some(e); }
+                    },
+                    Err(e) => { eprintln!("Parse error: {}", e); last_error = Some(e); }
+                },
+                Err(e) => { eprintln!("Client error: {}", e); last_error = Some(e); }
             }
         }
-
         Err(last_error.unwrap_or(LlmError::MaxRetriesExceeded(self.max_retries)))
     }
 
-    /// Convert LLM plan to PlannedCommits
-    fn plan_to_commits(
-        &self,
-        plan: LlmPlan,
-        hunks: &[Hunk],
-        next_hunk_id: &mut usize,
-    ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
-        let mut planned_commits = Vec::new();
-
-        for llm_commit in plan.commits {
-            let mut changes = Vec::new();
-
-            for change_spec in llm_commit.changes {
-                match change_spec {
-                    ChangeSpec::Hunk { id } => {
-                        changes.push(PlannedChange::ExistingHunk(HunkId(id)));
-                    }
+    fn plan_to_commits(&self, plan: LlmPlan, hunks: &[Hunk], next_hunk_id: &mut usize) -> Result<Vec<PlannedCommit>, ReorganizeError> {
+        plan.commits
+            .into_iter()
+            .map(|llm_commit| {
+                let changes = llm_commit.changes.into_iter().map(|spec| match spec {
+                    ChangeSpec::Hunk { id } => Ok(PlannedChange::ExistingHunk(HunkId(id))),
                     ChangeSpec::Partial { hunk_id, lines } => {
-                        // Create a new hunk with only the specified lines
-                        let source_hunk = hunks
-                            .iter()
-                            .find(|h| h.id.0 == hunk_id)
-                            .ok_or_else(|| {
-                                ReorganizeError::InvalidPlan(format!(
-                                    "Hunk {} not found",
-                                    hunk_id
-                                ))
-                            })?;
-
-                        let new_hunk = extract_partial_hunk(source_hunk, &lines, *next_hunk_id)?;
+                        let source = hunks.iter().find(|h| h.id.0 == hunk_id)
+                            .ok_or_else(|| ReorganizeError::InvalidPlan(format!("Hunk {} not found", hunk_id)))?;
+                        let new_hunk = extract_partial_hunk(source, &lines, *next_hunk_id)?;
                         *next_hunk_id += 1;
-                        changes.push(PlannedChange::NewHunk(new_hunk));
+                        Ok(PlannedChange::NewHunk(new_hunk))
                     }
                     ChangeSpec::Raw { file_path, diff } => {
                         let new_hunk = parse_raw_diff(&file_path, &diff, *next_hunk_id)?;
                         *next_hunk_id += 1;
-                        changes.push(PlannedChange::NewHunk(new_hunk));
+                        Ok(PlannedChange::NewHunk(new_hunk))
                     }
-                }
-            }
-
-            planned_commits.push(PlannedCommit::new(
-                llm_commit.description,
-                changes,
-            ));
-        }
-
-        Ok(planned_commits)
+                }).collect::<Result<Vec<_>, _>>()?;
+                Ok(PlannedCommit::new(llm_commit.description, changes))
+            })
+            .collect()
     }
 }
 
 impl Reorganizer for LlmReorganizer {
-    fn reorganize(
-        &self,
-        source_commits: &[SourceCommit],
-        hunks: &[Hunk],
-    ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
+    fn reorganize(&self, source_commits: &[SourceCommit], hunks: &[Hunk]) -> Result<Vec<PlannedCommit>, ReorganizeError> {
         if hunks.is_empty() {
             return Err(ReorganizeError::NoHunks);
         }
-
-        let plan = self
-            .invoke_with_retry(source_commits, hunks)
+        let plan = self.invoke_with_retry(source_commits, hunks)
             .map_err(|e| ReorganizeError::InvalidPlan(e.to_string()))?;
-
-        // Start new hunk IDs after the existing ones
         let mut next_hunk_id = hunks.iter().map(|h| h.id.0).max().unwrap_or(0) + 1;
-
         self.plan_to_commits(plan, hunks, &mut next_hunk_id)
     }
 
-    fn name(&self) -> &'static str {
-        "llm"
-    }
+    fn name(&self) -> &'static str { "llm" }
 }
 
-/// Extract specific lines from a hunk to create a new partial hunk
-fn extract_partial_hunk(
-    source: &Hunk,
-    line_indices: &[usize],
-    new_id: usize,
-) -> Result<Hunk, ReorganizeError> {
-    // Line indices are 1-indexed
+fn extract_partial_hunk(source: &Hunk, line_indices: &[usize], new_id: usize) -> Result<Hunk, ReorganizeError> {
     let mut new_lines = Vec::new();
-    let mut old_count = 0u32;
-    let mut new_count = 0u32;
+    let (mut old_count, mut new_count) = (0u32, 0u32);
 
     for &idx in line_indices {
         if idx == 0 || idx > source.lines.len() {
-            return Err(ReorganizeError::InvalidPlan(format!(
-                "Invalid line index {} for hunk {}",
-                idx, source.id.0
-            )));
+            return Err(ReorganizeError::InvalidPlan(format!("Invalid line index {} for hunk {}", idx, source.id.0)));
         }
-
         let line = &source.lines[idx - 1];
         match line {
-            DiffLine::Context(_) => {
-                old_count += 1;
-                new_count += 1;
-            }
-            DiffLine::Added(_) => {
-                new_count += 1;
-            }
-            DiffLine::Removed(_) => {
-                old_count += 1;
-            }
+            DiffLine::Context(_) => { old_count += 1; new_count += 1; }
+            DiffLine::Added(_) => { new_count += 1; }
+            DiffLine::Removed(_) => { old_count += 1; }
         }
         new_lines.push(line.clone());
     }
@@ -197,45 +119,34 @@ fn extract_partial_hunk(
     })
 }
 
-/// Parse raw diff content into a hunk
-fn parse_raw_diff(
-    file_path: &str,
-    diff: &str,
-    new_id: usize,
-) -> Result<Hunk, ReorganizeError> {
-    let mut lines = Vec::new();
-    let mut old_count = 0u32;
-    let mut new_count = 0u32;
-
-    for line in diff.lines() {
+fn parse_raw_diff(file_path: &str, diff: &str, new_id: usize) -> Result<Hunk, ReorganizeError> {
+    let (mut old_count, mut new_count) = (0u32, 0u32);
+    let lines: Vec<_> = diff.lines().filter_map(|line| {
         if let Some(content) = line.strip_prefix('+') {
-            lines.push(DiffLine::Added(content.to_string()));
             new_count += 1;
+            Some(DiffLine::Added(content.to_string()))
         } else if let Some(content) = line.strip_prefix('-') {
-            lines.push(DiffLine::Removed(content.to_string()));
             old_count += 1;
+            Some(DiffLine::Removed(content.to_string()))
         } else if let Some(content) = line.strip_prefix(' ') {
-            lines.push(DiffLine::Context(content.to_string()));
-            old_count += 1;
-            new_count += 1;
+            old_count += 1; new_count += 1;
+            Some(DiffLine::Context(content.to_string()))
         } else if !line.is_empty() {
-            // Treat as context line without prefix
-            lines.push(DiffLine::Context(line.to_string()));
-            old_count += 1;
-            new_count += 1;
+            old_count += 1; new_count += 1;
+            Some(DiffLine::Context(line.to_string()))
+        } else {
+            None
         }
-    }
+    }).collect();
 
     if lines.is_empty() {
-        return Err(ReorganizeError::InvalidPlan(
-            "Raw diff produced no lines".to_string(),
-        ));
+        return Err(ReorganizeError::InvalidPlan("Raw diff produced no lines".into()));
     }
 
     Ok(Hunk {
         id: HunkId(new_id),
         file_path: PathBuf::from(file_path),
-        old_start: 1, // We don't know the exact position for raw diffs
+        old_start: 1,
         old_count,
         new_start: 1,
         new_count,
