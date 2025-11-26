@@ -75,13 +75,6 @@ pub trait GitOps {
     /// Stage specific files (git add <files>)
     fn stage_files(&self, files: &[&Path]) -> Result<(), GitError>;
 
-    /// Checkout specific paths from a commit (git checkout <sha> -- <paths>)
-    /// This also stages the files.
-    fn checkout_paths_from_commit(&self, commit_sha: &str, paths: &[&Path]) -> Result<(), GitError>;
-
-    /// Remove files from the index and working tree (git rm)
-    fn remove_files(&self, files: &[&Path]) -> Result<(), GitError>;
-
     /// Create a commit with the currently staged changes
     fn commit(&self, message: &str, no_verify: bool) -> Result<String, GitError>;
 
@@ -226,14 +219,15 @@ impl GitOps for Git {
     fn get_new_files_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError> {
         // Use --name-status to get status codes (A = added, M = modified, D = deleted)
         let output = self.run_git(&["diff-tree", "--no-commit-id", "--name-status", "-r", commit_sha])?;
-        let mut new_files = Vec::new();
-        for line in output.lines() {
-            // Format is "A\tfilename" or "M\tfilename" etc.
-            let parts: Vec<&str> = line.splitn(2, '\t').collect();
-            if parts.len() == 2 && parts[0] == "A" {
-                new_files.push(parts[1].to_string());
-            }
-        }
+
+        // Filter for lines starting with "A\t" (added files)
+        let new_files = output
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("A\t").map(String::from)
+            })
+            .collect();
+
         Ok(new_files)
     }
 
@@ -331,33 +325,6 @@ impl GitOps for Git {
             args.push(file.to_str().unwrap());
         }
         self.run_git(&args)?;
-        Ok(())
-    }
-
-    fn checkout_paths_from_commit(&self, commit_sha: &str, paths: &[&Path]) -> Result<(), GitError> {
-        if paths.is_empty() {
-            return Ok(());
-        }
-
-        let mut args = vec!["checkout", commit_sha, "--"];
-        for path in paths {
-            args.push(path.to_str().unwrap());
-        }
-        self.run_git(&args)?;
-        Ok(())
-    }
-
-    fn remove_files(&self, files: &[&Path]) -> Result<(), GitError> {
-        if files.is_empty() {
-            return Ok(());
-        }
-
-        let mut args = vec!["rm", "-f", "--"];
-        for file in files {
-            args.push(file.to_str().unwrap());
-        }
-        // Ignore errors - file might not exist
-        let _ = self.run_git(&args);
         Ok(())
     }
 

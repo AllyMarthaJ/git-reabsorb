@@ -1,8 +1,14 @@
 use std::path::PathBuf;
 
-/// Unique identifier for a hunk
+/// Unique identifier for a hunk within a scramble operation
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HunkId(pub usize);
+
+impl std::fmt::Display for HunkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "hunk#{}", self.0)
+    }
+}
 
 /// A commit read from the git history
 #[derive(Debug, Clone)]
@@ -50,6 +56,7 @@ pub struct Hunk {
 
 impl Hunk {
     /// Convert this hunk to unified diff format suitable for `git apply`
+    #[must_use]
     pub fn to_patch(&self) -> String {
         let mut patch = String::new();
 
@@ -84,6 +91,7 @@ impl Hunk {
     }
 
     /// Generate a full patch for this hunk (with file headers)
+    #[must_use]
     pub fn to_full_patch(&self) -> String {
         let path_str = self.file_path.to_string_lossy();
         let mut patch = String::new();

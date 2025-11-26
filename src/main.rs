@@ -9,6 +9,11 @@ use git_scramble::git::{Git, GitOps, PRE_SCRAMBLE_REF};
 use git_scramble::models::{Hunk, PlannedCommit, SourceCommit};
 use git_scramble::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
 
+/// Truncate a SHA to 8 characters for display
+fn short_sha(sha: &str) -> &str {
+    &sha[..8.min(sha.len())]
+}
+
 #[derive(Parser)]
 #[command(name = "git-scramble")]
 #[command(about = "Reorganize git commits by unstaging and recommitting")]
@@ -85,8 +90,8 @@ fn run_reset<G: GitOps>(git: &G) -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Resetting from {} to pre-scramble state {}",
-        &current_head[..8.min(current_head.len())],
-        &pre_scramble_head[..8.min(pre_scramble_head.len())]
+        short_sha(&current_head),
+        short_sha(&pre_scramble_head)
     );
 
     // Hard reset to pre-scramble state
@@ -112,19 +117,12 @@ fn run_scramble<G: GitOps, E: Editor>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Determine the range
     let (base, head) = parse_range(git, cli.range.as_deref(), cli.base.as_deref())?;
-    println!(
-        "Scrambling commits from {}..{}",
-        &base[..8.min(base.len())],
-        &head[..8.min(head.len())]
-    );
+    println!("Scrambling commits from {}..{}", short_sha(&base), short_sha(&head));
 
     // Check if there's already a saved pre-scramble state
     if git.has_pre_scramble_head() {
         let saved = git.get_pre_scramble_head()?;
-        eprintln!(
-            "Warning: A pre-scramble state already exists ({})",
-            &saved[..8.min(saved.len())]
-        );
+        eprintln!("Warning: A pre-scramble state already exists ({})", short_sha(&saved));
         eprintln!("Run 'git-scramble --reset' to restore it, or it will be overwritten.");
         eprintln!();
     }
@@ -151,7 +149,7 @@ fn run_scramble<G: GitOps, E: Editor>(
     );
 
     // Step 4: Reset to base (unstage everything to working tree)
-    println!("Resetting to {}...", &base[..8.min(base.len())]);
+    println!("Resetting to {}...", short_sha(&base));
     git.reset_to(&base)?;
 
     // Step 5: Parse hunks from working tree diff (all relative to base)
@@ -406,7 +404,7 @@ fn create_commits<G: GitOps, E: Editor>(
 
         // Create the commit
         let new_sha = git.commit(&message, no_verify)?;
-        println!("  Created commit {}", &new_sha[..8.min(new_sha.len())]);
+        println!("  Created commit {}", short_sha(&new_sha));
     }
 
     Ok(())
@@ -449,7 +447,7 @@ fn generate_commit_help(hunks: &[&Hunk], new_files: &[&String]) -> String {
         lines.push(String::new());
         lines.push("Likely source commits:".to_string());
         for sha in all_source_commits {
-            lines.push(format!("  {}", &sha[..8.min(sha.len())]));
+            lines.push(format!("  {}", short_sha(sha)));
         }
     }
 
