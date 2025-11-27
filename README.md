@@ -1,6 +1,6 @@
-![git-scramble: Branch-based commit organisational tool. With some AI.](./banner.png)
+![git-reabsorb: Branch-based commit organisational tool. With some AI.](./banner.png)
 
-# git-scramble
+# ~~git-scramble~~ git-reabsorb
 
 Reorganize git commits by unstaging and recommitting with new structure.
 
