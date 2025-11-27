@@ -792,6 +792,34 @@ fn test_overwrite_pre_scramble_head() {
     );
 }
 
+#[test]
+fn test_diff_trees_matches_identical_commits() {
+    let repo = TestRepo::new();
+
+    repo.write_file("file.txt", "hello\n");
+    repo.stage_all();
+    let head = repo.commit("init");
+
+    let diff = repo.git.diff_trees(&head, &head).unwrap();
+    assert!(diff.trim().is_empty());
+}
+
+#[test]
+fn test_diff_trees_detects_changes() {
+    let repo = TestRepo::new();
+
+    repo.write_file("file.txt", "hello\n");
+    repo.stage_all();
+    let first = repo.commit("init");
+
+    repo.write_file("file.txt", "hello world\n");
+    repo.stage_all();
+    let second = repo.commit("update");
+
+    let diff = repo.git.diff_trees(&first, &second).unwrap();
+    assert!(diff.contains("diff --git"));
+}
+
 // ============================================================================
 // Branch Base Tests
 // ============================================================================

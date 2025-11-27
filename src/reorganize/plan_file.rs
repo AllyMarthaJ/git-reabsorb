@@ -283,7 +283,7 @@ pub fn save_plan(namespace: &str, plan: &SavedPlan) -> Result<PathBuf, PlanFileE
     }
 
     Err(PlanFileError::Io(last_err.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "Failed to save plan")
+        std::io::Error::other("Failed to save plan")
     })))
 }
 
@@ -344,8 +344,8 @@ mod tests {
             "base".into(),
             "head".into(),
             &planned,
-            &[hunk.clone()],
-            &[hunk],
+            std::slice::from_ref(&hunk),
+            std::slice::from_ref(&hunk),
             &HashMap::new(),
             &HashMap::new(),
         );

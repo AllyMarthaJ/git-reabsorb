@@ -55,6 +55,9 @@ pub trait GitOps {
     /// Get the raw diff output between HEAD and working tree
     fn get_working_tree_diff(&self) -> Result<String, GitError>;
 
+    /// Get diff between two tree-ish references
+    fn diff_trees(&self, left: &str, right: &str) -> Result<String, GitError>;
+
     /// Get list of files changed in a specific commit
     fn get_files_changed_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError>;
 
@@ -213,9 +216,12 @@ impl GitOps for Git {
     }
 
     fn get_working_tree_diff(&self) -> Result<String, GitError> {
-        // Get diff between HEAD and working tree (unstaged changes)
-        // We use --no-color to ensure clean output
         let output = self.run_git(&["diff", "HEAD", "--no-color"])?;
+        Ok(output)
+    }
+
+    fn diff_trees(&self, left: &str, right: &str) -> Result<String, GitError> {
+        let output = self.run_git(&["diff", left, right, "--no-color"])?;
         Ok(output)
     }
 

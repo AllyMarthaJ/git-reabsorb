@@ -24,6 +24,8 @@ pub enum AppError {
     Diff(#[from] DiffParseError),
     #[error(transparent)]
     Execution(#[from] ExecutionError),
+    #[error("Integrity check failed: {0}")]
+    Integrity(String),
     #[error("{0}")]
     User(String),
 }
@@ -146,6 +148,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             return Err(AppError::Execution(err));
         }
 
+        self.verify_final_state(&plan.original_head)?;
         self.plan_store.delete()?;
         println!(
             "\nDone! Created {} commits.",
@@ -261,11 +264,26 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             return Err(AppError::Execution(err));
         }
 
+        self.verify_final_state(&saved_plan.original_head)?;
         self.plan_store.delete()?;
         println!("\nDone! Created {} commits.", plan.planned_commits.len());
         println!("To undo: git scramble reset");
 
         Ok(())
+    }
+
+    fn verify_final_state(&self, expected_head: &str) -> Result<(), AppError> {
+        let current_head = self.git.get_head()?;
+        let diff = self.git.diff_trees(expected_head, &current_head)?;
+        if diff.trim().is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Integrity(format!(
+                "HEAD {} differs from expected {}",
+                short_sha(&current_head),
+                short_sha(expected_head)
+            )))
+        }
     }
 }
 
