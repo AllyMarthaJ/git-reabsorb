@@ -36,7 +36,7 @@ pub struct PlanArgs {
     pub base: Option<String>,
 
     /// Reorganization strategy
-    #[arg(short = 's', long, value_enum, default_value = "preserve")]
+    #[arg(short = 's', long, value_enum, default_value = "squash")]
     pub strategy: StrategyArg,
 
     /// Show plan without executing
