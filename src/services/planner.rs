@@ -91,7 +91,11 @@ impl<'a, G: GitOps> Planner<'a, G> {
     ) -> Result<PlanDraft, ReorganizeError> {
         let reorganizer = self.strategies.create(strategy);
         let strategy_name = reorganizer.name().to_string();
-        let planned_commits = reorganizer.reorganize(source_commits, hunks)?;
+        let mut planned_commits = reorganizer.reorganize(source_commits, hunks)?;
+        let removed_empty = retain_non_empty(&mut planned_commits);
+        if removed_empty > 0 {
+            eprintln!("Note: dropped {} empty commits from plan", removed_empty);
+        }
         let new_hunks = extract_new_hunks(&planned_commits);
 
         Ok(PlanDraft {
@@ -127,4 +131,30 @@ fn extract_new_hunks(planned_commits: &[PlannedCommit]) -> Vec<Hunk> {
             }
         })
         .collect()
+}
+
+fn retain_non_empty(planned_commits: &mut Vec<PlannedCommit>) -> usize {
+    let before = planned_commits.len();
+    planned_commits.retain(|c| !c.changes.is_empty());
+    before - planned_commits.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{CommitDescription, HunkId, PlannedCommit};
+
+    #[test]
+    fn drops_empty_commits() {
+        let mut planned = vec![
+            PlannedCommit::from_hunk_ids(CommitDescription::short_only("keep"), vec![HunkId(1)]),
+            PlannedCommit::new(CommitDescription::short_only("drop"), vec![]),
+        ];
+
+        let removed = retain_non_empty(&mut planned);
+
+        assert_eq!(removed, 1);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].description.short, "keep");
+    }
 }
