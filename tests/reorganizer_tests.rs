@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use git_scramble::git::{Git, GitOps};
-use git_scramble::models::Hunk;
-use git_scramble::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
+use git_reabsorb::git::{Git, GitOps};
+use git_reabsorb::models::Hunk;
+use git_reabsorb::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
 
 struct TestRepo {
     path: PathBuf,
@@ -15,7 +15,7 @@ struct TestRepo {
 
 impl TestRepo {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("git-scramble-test-{}", uuid()));
+        let path = std::env::temp_dir().join(format!("git-reabsorb-test-{}", uuid()));
         if path.exists() {
             let _ = fs::remove_dir_all(&path);
         }
@@ -49,13 +49,13 @@ impl TestRepo {
         self.git.get_head().expect("Failed to get HEAD")
     }
 
-    fn read_commits(&self, base: &str, head: &str) -> Vec<git_scramble::models::SourceCommit> {
+    fn read_commits(&self, base: &str, head: &str) -> Vec<git_reabsorb::models::SourceCommit> {
         self.git
             .read_commits(base, head)
             .expect("Failed to read commits")
     }
 
-    fn read_hunks(&self, commits: &[git_scramble::models::SourceCommit]) -> Vec<Hunk> {
+    fn read_hunks(&self, commits: &[git_reabsorb::models::SourceCommit]) -> Vec<Hunk> {
         let mut all_hunks = Vec::new();
         let mut hunk_id = 0;
         for commit in commits {
@@ -125,7 +125,7 @@ fn test_preserve_original_single_commit() {
     repo.stage_all();
     let base = repo.commit("Initial commit");
 
-    // Create one commit to scramble
+    // Create one commit to reabsorb
     repo.write_file("src/main.rs", "fn main() {}\n");
     repo.stage_all();
     let _head = repo.commit("Add main.rs");
@@ -617,37 +617,37 @@ fn test_empty_file_creation() {
 }
 
 // ============================================================================
-// Pre-Scramble State Tests
+// Pre-Reabsorb State Tests
 // ============================================================================
 
 #[test]
-fn test_save_and_get_pre_scramble_head() {
+fn test_save_and_get_pre_reabsorb_head() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
     repo.stage_all();
     let initial_head = repo.commit("Initial commit");
 
-    // Initially, no pre-scramble state should exist
-    assert!(!repo.git.has_pre_scramble_head(&ref_name));
+    // Initially, no pre-reabsorb state should exist
+    assert!(!repo.git.has_pre_reabsorb_head(&ref_name));
 
-    // Save the pre-scramble state
-    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    // Save the pre-reabsorb state
+    repo.git.save_pre_reabsorb_head(&ref_name).unwrap();
 
     // Now it should exist
-    assert!(repo.git.has_pre_scramble_head(&ref_name));
+    assert!(repo.git.has_pre_reabsorb_head(&ref_name));
 
     // And it should match the current HEAD
-    let saved = repo.git.get_pre_scramble_head(&ref_name).unwrap();
+    let saved = repo.git.get_pre_reabsorb_head(&ref_name).unwrap();
     assert_eq!(saved, initial_head);
 }
 
 #[test]
-fn test_clear_pre_scramble_head() {
+fn test_clear_pre_reabsorb_head() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -655,20 +655,20 @@ fn test_clear_pre_scramble_head() {
     repo.commit("Initial commit");
 
     // Save and verify
-    repo.git.save_pre_scramble_head(&ref_name).unwrap();
-    assert!(repo.git.has_pre_scramble_head(&ref_name));
+    repo.git.save_pre_reabsorb_head(&ref_name).unwrap();
+    assert!(repo.git.has_pre_reabsorb_head(&ref_name));
 
     // Clear it
-    repo.git.clear_pre_scramble_head(&ref_name).unwrap();
+    repo.git.clear_pre_reabsorb_head(&ref_name).unwrap();
 
     // Should no longer exist
-    assert!(!repo.git.has_pre_scramble_head(&ref_name));
+    assert!(!repo.git.has_pre_reabsorb_head(&ref_name));
 }
 
 #[test]
-fn test_clear_nonexistent_pre_scramble_head() {
+fn test_clear_nonexistent_pre_reabsorb_head() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
@@ -676,39 +676,39 @@ fn test_clear_nonexistent_pre_scramble_head() {
     repo.commit("Initial commit");
 
     // Clearing when none exists should not error
-    assert!(!repo.git.has_pre_scramble_head(&ref_name));
-    repo.git.clear_pre_scramble_head(&ref_name).unwrap();
-    assert!(!repo.git.has_pre_scramble_head(&ref_name));
+    assert!(!repo.git.has_pre_reabsorb_head(&ref_name));
+    repo.git.clear_pre_reabsorb_head(&ref_name).unwrap();
+    assert!(!repo.git.has_pre_reabsorb_head(&ref_name));
 }
 
 #[test]
-fn test_get_pre_scramble_head_when_none_exists() {
+fn test_get_pre_reabsorb_head_when_none_exists() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
     repo.stage_all();
     repo.commit("Initial commit");
 
-    // Should return error when no pre-scramble state exists
-    assert!(!repo.git.has_pre_scramble_head(&ref_name));
-    let result = repo.git.get_pre_scramble_head(&ref_name);
+    // Should return error when no pre-reabsorb state exists
+    assert!(!repo.git.has_pre_reabsorb_head(&ref_name));
+    let result = repo.git.get_pre_reabsorb_head(&ref_name);
     assert!(result.is_err());
 }
 
 #[test]
-fn test_pre_scramble_head_survives_new_commits() {
+fn test_pre_reabsorb_head_survives_new_commits() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
     repo.stage_all();
     let initial_head = repo.commit("Initial commit");
 
-    // Save pre-scramble state
-    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    // Save pre-reabsorb state
+    repo.git.save_pre_reabsorb_head(&ref_name).unwrap();
 
     // Create more commits
     repo.write_file("src/main.rs", "fn main() {}\n");
@@ -719,23 +719,23 @@ fn test_pre_scramble_head_survives_new_commits() {
     repo.stage_all();
     repo.commit("Add lib.rs");
 
-    // Pre-scramble state should still point to the original HEAD
-    let saved = repo.git.get_pre_scramble_head(&ref_name).unwrap();
+    // Pre-reabsorb state should still point to the original HEAD
+    let saved = repo.git.get_pre_reabsorb_head(&ref_name).unwrap();
     assert_eq!(saved, initial_head);
 }
 
 #[test]
-fn test_reset_to_pre_scramble_head() {
+fn test_reset_to_pre_reabsorb_head() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
     repo.stage_all();
     let initial_head = repo.commit("Initial commit");
 
-    // Save pre-scramble state
-    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    // Save pre-reabsorb state
+    repo.git.save_pre_reabsorb_head(&ref_name).unwrap();
 
     // Create more commits
     repo.write_file("src/main.rs", "fn main() {}\n");
@@ -749,31 +749,31 @@ fn test_reset_to_pre_scramble_head() {
     // Verify we're at the new HEAD
     assert_eq!(repo.git.get_head().unwrap(), final_head);
 
-    // Reset to pre-scramble state
-    let pre_scramble = repo.git.get_pre_scramble_head(&ref_name).unwrap();
-    repo.git.reset_hard(&pre_scramble).unwrap();
+    // Reset to pre-reabsorb state
+    let pre_reabsorb = repo.git.get_pre_reabsorb_head(&ref_name).unwrap();
+    repo.git.reset_hard(&pre_reabsorb).unwrap();
 
     // Verify we're back at the original HEAD
     assert_eq!(repo.git.get_head().unwrap(), initial_head);
 
     // Clean up the ref
-    repo.git.clear_pre_scramble_head(&ref_name).unwrap();
+    repo.git.clear_pre_reabsorb_head(&ref_name).unwrap();
 }
 
 #[test]
-fn test_overwrite_pre_scramble_head() {
+fn test_overwrite_pre_reabsorb_head() {
     let repo = TestRepo::new();
-    let ref_name = test_pre_scramble_ref();
+    let ref_name = test_pre_reabsorb_ref();
 
     // Create initial commit
     repo.write_file("README.md", "# Test\n");
     repo.stage_all();
     let first_head = repo.commit("Initial commit");
 
-    // Save pre-scramble state
-    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    // Save pre-reabsorb state
+    repo.git.save_pre_reabsorb_head(&ref_name).unwrap();
     assert_eq!(
-        repo.git.get_pre_scramble_head(&ref_name).unwrap(),
+        repo.git.get_pre_reabsorb_head(&ref_name).unwrap(),
         first_head
     );
 
@@ -782,12 +782,12 @@ fn test_overwrite_pre_scramble_head() {
     repo.stage_all();
     let second_head = repo.commit("Add main.rs");
 
-    // Overwrite pre-scramble state
-    repo.git.save_pre_scramble_head(&ref_name).unwrap();
+    // Overwrite pre-reabsorb state
+    repo.git.save_pre_reabsorb_head(&ref_name).unwrap();
 
     // Should now point to the second HEAD
     assert_eq!(
-        repo.git.get_pre_scramble_head(&ref_name).unwrap(),
+        repo.git.get_pre_reabsorb_head(&ref_name).unwrap(),
         second_head
     );
 }
@@ -1122,7 +1122,7 @@ fn helper_two() {
 
     // Parse hunks from working tree
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
 
     // Should have multiple hunks (depending on git's diff algorithm)
     // The key is that they all apply cleanly when grouped
@@ -1185,7 +1185,7 @@ fn test_hunks_sorted_by_line_number_before_apply() {
 
     // Parse hunks
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
 
     // Even if hunks come in any order, they should apply correctly
     // because apply_hunks_to_index sorts them
@@ -1195,11 +1195,11 @@ fn test_hunks_sorted_by_line_number_before_apply() {
 }
 
 // ============================================================================
-// Full Scramble Flow with New Files Tests
+// Full Reabsorb Flow with New Files Tests
 // ============================================================================
 
 #[test]
-fn test_scramble_includes_new_files_in_squash() {
+fn test_reabsorb_includes_new_files_in_squash() {
     let repo = TestRepo::new();
 
     // Create initial commit (base)
@@ -1390,7 +1390,7 @@ fn test_apply_single_hunk_to_index() {
 
     // Parse the hunk
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
     assert!(!hunks.is_empty());
 
     // Apply single hunk
@@ -1423,7 +1423,7 @@ fn test_apply_hunks_from_multiple_files() {
 
     // Parse hunks
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_scramble::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
     assert_eq!(hunks.len(), 2);
 
     // Apply all hunks together
@@ -1440,13 +1440,13 @@ fn test_apply_hunks_from_multiple_files() {
 // Plan File Tests
 // ============================================================================
 
-use git_scramble::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit};
-use git_scramble::reorganize::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
+use git_reabsorb::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit};
+use git_reabsorb::reorganize::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
 
 const TEST_REF_NAMESPACE: &str = "test-branch";
 
-fn test_pre_scramble_ref() -> String {
-    git_scramble::git::pre_scramble_ref_for(TEST_REF_NAMESPACE)
+fn test_pre_reabsorb_ref() -> String {
+    git_reabsorb::git::pre_reabsorb_ref_for(TEST_REF_NAMESPACE)
 }
 use std::collections::HashMap;
 
@@ -1459,7 +1459,7 @@ fn test_saved_plan_creation_and_roundtrip() {
     repo.stage_all();
     let base = repo.commit("Initial commit");
 
-    // Create a commit to scramble
+    // Create a commit to reabsorb
     repo.write_file("src/main.rs", "fn main() {}\n");
     repo.stage_all();
     let head = repo.commit("Add main");

@@ -1,4 +1,4 @@
-//! git-scramble: Reorganize git commits by unstaging and recommitting
+//! git-reabsorb: Reorganize git commits by unstaging and recommitting
 //!
 //! This crate provides tools to:
 //! - Read commits and their hunks from a git repository
@@ -16,8 +16,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use git_scramble::git::{Git, GitOps};
-//! use git_scramble::reorganize::{PreserveOriginal, Reorganizer};
+//! use git_reabsorb::git::{Git, GitOps};
+//! use git_reabsorb::reorganize::{PreserveOriginal, Reorganizer};
 //!
 //! let git = Git::new();
 //! let base = git.find_branch_base()?;

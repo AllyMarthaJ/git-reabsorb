@@ -36,7 +36,7 @@ pub struct App<G: GitOps, E: Editor, P: PlanStore> {
     plan_store: P,
     strategies: StrategyFactory,
     namespace: String,
-    pre_scramble_ref: String,
+    pre_reabsorb_ref: String,
 }
 
 impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
@@ -47,14 +47,14 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         strategies: StrategyFactory,
         namespace: String,
     ) -> Self {
-        let pre_scramble_ref = crate::git::pre_scramble_ref_for(&namespace);
+        let pre_reabsorb_ref = crate::git::pre_reabsorb_ref_for(&namespace);
         Self {
             git,
             editor,
             plan_store,
             strategies,
             namespace,
-            pre_scramble_ref,
+            pre_reabsorb_ref,
         }
     }
 
@@ -67,26 +67,26 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
     }
 
     fn handle_reset(&mut self) -> Result<(), AppError> {
-        if !self.git.has_pre_scramble_head(&self.pre_scramble_ref) {
+        if !self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
             return Err(AppError::User(
-                "No pre-scramble state found. Nothing to reset.".to_string(),
+                "No pre-reabsorb state found. Nothing to reset.".to_string(),
             ));
         }
 
-        let pre_scramble_head = self.git.get_pre_scramble_head(&self.pre_scramble_ref)?;
+        let pre_reabsorb_head = self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
         println!(
-            "Resetting from {} to pre-scramble state {}",
+            "Resetting from {} to pre-reabsorb state {}",
             short_sha(&self.git.get_head()?),
-            short_sha(&pre_scramble_head)
+            short_sha(&pre_reabsorb_head)
         );
 
-        self.git.reset_hard(&pre_scramble_head)?;
-        self.git.clear_pre_scramble_head(&self.pre_scramble_ref)?;
+        self.git.reset_hard(&pre_reabsorb_head)?;
+        self.git.clear_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
 
-        println!("Successfully reset to pre-scramble state.");
+        println!("Successfully reset to pre-reabsorb state.");
         println!(
             "The saved ref ({}) has been cleared.",
-            self.pre_scramble_ref
+            self.pre_reabsorb_ref
         );
 
         Ok(())
@@ -110,7 +110,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         } else if plan.next_commit_index > 0 {
             let plan_path = crate::reorganize::plan_file::plan_file_path(&self.namespace);
             return Err(AppError::User(format!(
-                "Plan has {} commits already applied. Use 'git scramble apply --resume' to continue, or delete {}",
+                "Plan has {} commits already applied. Use 'git reabsorb apply --resume' to continue, or delete {}",
                 plan.next_commit_index,
                 plan_path.display()
             )));
@@ -144,7 +144,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &mut plan,
         ) {
             eprintln!("\nError during commit creation: {}", err);
-            eprintln!("Progress saved. Use 'git scramble apply --resume' to continue.");
+            eprintln!("Progress saved. Use 'git reabsorb apply --resume' to continue.");
             return Err(AppError::Execution(err));
         }
 
@@ -154,7 +154,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             "\nDone! Created {} commits.",
             plan.next_commit_index.saturating_sub(already_created)
         );
-        println!("To undo: git scramble reset");
+        println!("To undo: git reabsorb reset");
 
         Ok(())
     }
@@ -163,7 +163,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         if self.plan_store.exists() {
             let plan_path = crate::reorganize::plan_file::plan_file_path(&self.namespace);
             eprintln!(
-                "Warning: A saved plan exists. Use 'git scramble apply' or delete {}\n",
+                "Warning: A saved plan exists. Use 'git reabsorb apply' or delete {}\n",
                 plan_path.display()
             );
         }
@@ -176,10 +176,10 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             short_sha(&range.head)
         );
 
-        if self.git.has_pre_scramble_head(&self.pre_scramble_ref) {
+        if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
             eprintln!(
-                "Warning: Pre-scramble state exists ({}). Use 'git scramble reset' or it will be overwritten.\n",
-                short_sha(&self.git.get_pre_scramble_head(&self.pre_scramble_ref)?)
+                "Warning: Pre-reabsorb state exists ({}). Use 'git reabsorb reset' or it will be overwritten.\n",
+                short_sha(&self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?)
             );
         }
 
@@ -206,8 +206,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             return Ok(());
         }
 
-        self.git.save_pre_scramble_head(&self.pre_scramble_ref)?;
-        println!("Saved pre-scramble state to {}", self.pre_scramble_ref);
+        self.git.save_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
+        println!("Saved pre-reabsorb state to {}", self.pre_reabsorb_ref);
 
         println!("Resetting to {}...", short_sha(&range.base));
         self.git.reset_to(&range.base)?;
@@ -243,8 +243,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 "Plan saved to {}",
                 crate::reorganize::plan_file::plan_file_path(&self.namespace).display()
             );
-            println!("\nTo apply: git scramble apply");
-            println!("To undo reset: git scramble reset");
+            println!("\nTo apply: git reabsorb apply");
+            println!("To undo reset: git reabsorb reset");
             return Ok(());
         }
 
@@ -259,7 +259,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         ) {
             eprintln!("\nError: {}", err);
             eprintln!(
-                "Progress saved. Use 'git scramble apply --resume' to continue, or 'git scramble reset' to undo."
+                "Progress saved. Use 'git reabsorb apply --resume' to continue, or 'git reabsorb reset' to undo."
             );
             return Err(AppError::Execution(err));
         }
@@ -267,7 +267,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         self.verify_final_state(&saved_plan.original_head)?;
         self.plan_store.delete()?;
         println!("\nDone! Created {} commits.", plan.planned_commits.len());
-        println!("To undo: git scramble reset");
+        println!("To undo: git reabsorb reset");
 
         Ok(())
     }

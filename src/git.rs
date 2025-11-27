@@ -21,15 +21,15 @@ pub enum GitError {
     NoCommitsInRange(String),
     #[error("Failed to parse diff: {0}")]
     DiffParseError(#[from] crate::diff_parser::DiffParseError),
-    #[error("No pre-scramble state saved. Run 'git scramble plan' first.")]
+    #[error("No pre-reabsorb state saved. Run 'git reabsorb plan' first.")]
     NoSavedState,
 }
 
-const PRE_SCRAMBLE_REF_PREFIX: &str = "refs/scramble/pre-scramble";
+const PRE_REABSORB_REF_PREFIX: &str = "refs/reabsorb/pre-reabsorb";
 
-/// Build the ref used to store the pre-scramble HEAD for a namespace
-pub fn pre_scramble_ref_for(namespace: &str) -> String {
-    format!("{}/{}", PRE_SCRAMBLE_REF_PREFIX, namespace)
+/// Build the ref used to store the pre-reabsorb HEAD for a namespace
+pub fn pre_reabsorb_ref_for(namespace: &str) -> String {
+    format!("{}/{}", PRE_REABSORB_REF_PREFIX, namespace)
 }
 
 /// Trait for git operations - allows mocking in tests
@@ -85,17 +85,17 @@ pub trait GitOps {
     /// Create a commit with the currently staged changes
     fn commit(&self, message: &str, no_verify: bool) -> Result<String, GitError>;
 
-    /// Save the current HEAD as the pre-scramble state
-    fn save_pre_scramble_head(&self, ref_name: &str) -> Result<(), GitError>;
+    /// Save the current HEAD as the pre-reabsorb state
+    fn save_pre_reabsorb_head(&self, ref_name: &str) -> Result<(), GitError>;
 
-    /// Get the saved pre-scramble HEAD, if any
-    fn get_pre_scramble_head(&self, ref_name: &str) -> Result<String, GitError>;
+    /// Get the saved pre-reabsorb HEAD, if any
+    fn get_pre_reabsorb_head(&self, ref_name: &str) -> Result<String, GitError>;
 
-    /// Check if a pre-scramble state is saved
-    fn has_pre_scramble_head(&self, ref_name: &str) -> bool;
+    /// Check if a pre-reabsorb state is saved
+    fn has_pre_reabsorb_head(&self, ref_name: &str) -> bool;
 
-    /// Clear the saved pre-scramble state
-    fn clear_pre_scramble_head(&self, ref_name: &str) -> Result<(), GitError>;
+    /// Clear the saved pre-reabsorb state
+    fn clear_pre_reabsorb_head(&self, ref_name: &str) -> Result<(), GitError>;
 
     /// Get the current branch name ("HEAD" if detached)
     fn current_branch_name(&self) -> Result<String, GitError>;
@@ -368,13 +368,13 @@ impl GitOps for Git {
         self.get_head()
     }
 
-    fn save_pre_scramble_head(&self, ref_name: &str) -> Result<(), GitError> {
+    fn save_pre_reabsorb_head(&self, ref_name: &str) -> Result<(), GitError> {
         let head = self.get_head()?;
         self.run_git(&["update-ref", ref_name, &head])?;
         Ok(())
     }
 
-    fn get_pre_scramble_head(&self, ref_name: &str) -> Result<String, GitError> {
+    fn get_pre_reabsorb_head(&self, ref_name: &str) -> Result<String, GitError> {
         let result = self.run_git(&["rev-parse", ref_name]);
         match result {
             Ok(sha) => Ok(sha.trim().to_string()),
@@ -382,12 +382,12 @@ impl GitOps for Git {
         }
     }
 
-    fn has_pre_scramble_head(&self, ref_name: &str) -> bool {
+    fn has_pre_reabsorb_head(&self, ref_name: &str) -> bool {
         self.run_git(&["rev-parse", "--verify", ref_name]).is_ok()
     }
 
-    fn clear_pre_scramble_head(&self, ref_name: &str) -> Result<(), GitError> {
-        if self.has_pre_scramble_head(ref_name) {
+    fn clear_pre_reabsorb_head(&self, ref_name: &str) -> Result<(), GitError> {
+        if self.has_pre_reabsorb_head(ref_name) {
             self.run_git(&["update-ref", "-d", ref_name])?;
         }
         Ok(())

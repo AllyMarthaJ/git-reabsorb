@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::{CommitDescription, DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit};
 
-const SCRAMBLE_DIR: &str = ".git/scramble";
+const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
 
 #[derive(Debug, thiserror::Error)]
@@ -18,7 +18,7 @@ pub enum PlanFileError {
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(String),
-    #[error("No saved plan found. Run 'git scramble plan --save-plan' first.")]
+    #[error("No saved plan found. Run 'git reabsorb plan --save-plan' first.")]
     NoPlan,
 }
 
@@ -230,13 +230,13 @@ impl From<&SavedDiffLine> for DiffLine {
 
 fn base_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(dir) = env::var("GIT_SCRAMBLE_PLAN_DIR") {
+    if let Ok(dir) = env::var("GIT_REABSORB_PLAN_DIR") {
         if !dir.is_empty() {
             dirs.push(PathBuf::from(dir));
         }
     }
-    dirs.push(PathBuf::from(SCRAMBLE_DIR));
-    dirs.push(PathBuf::from(".git-scramble"));
+    dirs.push(PathBuf::from(REABSORB_DIR));
+    dirs.push(PathBuf::from(".git-reabsorb"));
     dirs
 }
 
@@ -259,7 +259,7 @@ fn existing_plan_path(namespace: &str) -> Option<PathBuf> {
 
 pub fn plan_file_path(namespace: &str) -> PathBuf {
     existing_plan_path(namespace)
-        .unwrap_or_else(|| PathBuf::from(SCRAMBLE_DIR).join(namespace).join(PLAN_FILE))
+        .unwrap_or_else(|| PathBuf::from(REABSORB_DIR).join(namespace).join(PLAN_FILE))
 }
 
 pub fn save_plan(namespace: &str, plan: &SavedPlan) -> Result<PathBuf, PlanFileError> {

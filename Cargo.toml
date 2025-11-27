@@ -1,13 +1,13 @@
 [package]
-name = "git-scramble"
+name = "git-reabsorb"
 version = "0.1.0"
 edition = "2021"
 description = "Reorganize git commits by unstaging and recommitting with new structure"
 license = "MIT"
 
 [[bin]]
-name = "git-scramble"
-path = "src/bin/git-scramble.rs"
+name = "git-reabsorb"
+path = "src/bin/git-reabsorb.rs"
 
 [dependencies]
 thiserror = "1.0"

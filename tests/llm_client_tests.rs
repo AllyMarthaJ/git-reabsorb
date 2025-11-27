@@ -3,7 +3,7 @@
 //! These tests actually invoke the user's local claude CLI to verify
 //! the integration works correctly.
 
-use git_scramble::reorganize::llm::{ClaudeCliClient, LlmClient};
+use git_reabsorb::reorganize::llm::{ClaudeCliClient, LlmClient};
 
 #[test]
 fn test_claude_cli_exists() {

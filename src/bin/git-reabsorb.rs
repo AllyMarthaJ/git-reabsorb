@@ -1,11 +1,11 @@
 use clap::Parser;
 
-use git_scramble::app::App;
-use git_scramble::cli::{Cli, Command};
-use git_scramble::editor::SystemEditor;
-use git_scramble::git::{Git, GitOps};
-use git_scramble::plan_store::FilePlanStore;
-use git_scramble::services::strategy::StrategyFactory;
+use git_reabsorb::app::App;
+use git_reabsorb::cli::{Cli, Command};
+use git_reabsorb::editor::SystemEditor;
+use git_reabsorb::git::{Git, GitOps};
+use git_reabsorb::plan_store::FilePlanStore;
+use git_reabsorb::services::strategy::StrategyFactory;
 
 fn main() {
     let cli = Cli::parse();

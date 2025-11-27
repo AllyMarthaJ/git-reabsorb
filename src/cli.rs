@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-#[command(name = "git-scramble")]
+#[command(name = "git-reabsorb")]
 #[command(about = "Reorganize git commits by unstaging and recommitting")]
 #[command(version)]
 #[command(subcommand_required = false)]
@@ -19,24 +19,24 @@ pub enum Command {
     Plan(PlanArgs),
     /// Apply a previously saved plan
     Apply(ApplyArgs),
-    /// Reset to the pre-scramble ref created during planning
+    /// Reset to the pre-reabsorb ref created during planning
     Reset,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct PlanArgs {
-    /// Commit range to scramble (default: auto-detect branch base..HEAD)
+    /// Commit range to reabsorb (default: auto-detect branch base..HEAD)
     /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456
     #[arg(value_name = "RANGE")]
     pub range: Option<String>,
 
-    /// Base branch to scramble from (uses tip of branch)
+    /// Base branch to reabsorb from (uses tip of branch)
     /// Examples: main, develop, origin/main, feat/my-feature
     #[arg(short, long)]
     pub base: Option<String>,
 
     /// Reorganization strategy
-    #[arg(short = 's', long, value_enum, default_value = "squash")]
+    #[arg(short = 's', long, value_enum, default_value = "preserve")]
     pub strategy: StrategyArg,
 
     /// Show plan without executing

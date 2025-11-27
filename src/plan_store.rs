@@ -10,7 +10,7 @@ pub trait PlanStore {
     fn exists(&self) -> bool;
 }
 
-/// Filesystem-backed plan store using `.git/scramble/plan.json`.
+/// Filesystem-backed plan store using `.git/reabsorb/plan.json`.
 pub struct FilePlanStore {
     namespace: String,
 }

@@ -69,7 +69,7 @@ impl Editor for SystemEditor {
 
         // Create temp file with initial content
         let mut temp_file = tempfile::Builder::new()
-            .prefix("git-scramble-")
+            .prefix("git-reabsorb-")
             .suffix(".txt")
             .tempfile()?;
 

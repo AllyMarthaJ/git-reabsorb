@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-/// Unique identifier for a hunk within a scramble operation
+/// Unique identifier for a hunk within a reabsorb operation
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HunkId(pub usize);
 
