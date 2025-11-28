@@ -85,14 +85,17 @@ Each change in a commit can be one of:
 
 ## Guidelines
 
+0. You should ALWAYS emphasise WHY a change was made, if that information was available.
+   The short description should contain a concise summary, and the long description
+   should elaborate on the reasoning. Avoid generic messages and short descriptions beginning
+   with "Add", "Fix", "Update", etc. without context.
 1. Group related changes together into logical commits
 2. Each commit should represent a single logical change (feature, fix, refactor, etc.)
 3. Write clear, descriptive commit messages
-4. Explain _why_ the change was necessitated in the long description
-5. Consider file relationships and dependencies when grouping
-6. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
-7. You may split hunks using "partial" if a hunk contains unrelated changes
-8. Preserve the semantic meaning of changes - don't break functionality
+4. Consider file relationships and dependencies when grouping
+5. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
+6. You may split hunks using "partial" if a hunk contains unrelated changes
+7. Preserve the semantic meaning of changes - don't break functionality
 
 ## Original Commits (for context)
 
