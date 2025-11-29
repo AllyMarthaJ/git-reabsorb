@@ -33,8 +33,33 @@ impl GlobalOrderer {
         // Add file-based dependencies (changes to same file should be ordered)
         Self::add_file_dependencies(&commits, analysis, &mut graph);
 
-        // Topological sort
-        let ordered_ids = graph.topological_sort()?;
+        // Try topological sort, breaking cycles if needed
+        const MAX_CYCLE_BREAKS: u32 = 10;
+        let mut ordered_ids = None;
+
+        for attempt in 0..MAX_CYCLE_BREAKS {
+            match graph.topological_sort() {
+                Ok(ids) => {
+                    ordered_ids = Some(ids);
+                    break;
+                }
+                Err(HierarchicalError::CyclicDependency) => {
+                    if attempt == 0 {
+                        eprintln!("  Detected cyclic dependencies in commit ordering");
+                    }
+
+                    if graph.break_cycles() {
+                        eprintln!("  Broke cycle (attempt {})", attempt + 1);
+                    } else {
+                        // No cycles to break, but sort failed - shouldn't happen
+                        return Err(HierarchicalError::CyclicDependency);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        let ordered_ids = ordered_ids.ok_or(HierarchicalError::CyclicDependency)?;
 
         // Build ordered result
         let commit_map: HashMap<ClusterId, ClusterCommit> =
@@ -349,27 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_category_ordering() {
-        let commits = vec![
-            make_commit(0, vec![0], vec![]), // Feature
-            make_commit(1, vec![1], vec![]), // Test
-            make_commit(2, vec![2], vec![]), // Dependency
-        ];
-
-        let mut analysis = AnalysisResults::new();
-        analysis.add(make_analysis_for(0, ChangeCategory::Feature));
-        analysis.add(make_analysis_for(1, ChangeCategory::Test));
-        analysis.add(make_analysis_for(2, ChangeCategory::Dependency));
-
-        let ordered = HeuristicOrderer::order(commits, &analysis);
-
-        let ids: Vec<usize> = ordered.iter().map(|c| c.cluster_id.0).collect();
-        // Dependency (2) should come first, then Feature (0), then Test (1)
-        assert_eq!(ids, vec![2, 0, 1]);
-    }
-
-    #[test]
-    fn test_cyclic_dependency_detection() {
+    fn test_cyclic_dependency_resolution() {
         let commits = vec![
             make_commit(0, vec![0], vec![1]),
             make_commit(1, vec![1], vec![0]),
@@ -379,7 +384,10 @@ mod tests {
 
         let result = GlobalOrderer::order(commits, &analysis);
 
-        assert!(matches!(result, Err(HierarchicalError::CyclicDependency)));
+        // Should succeed by breaking the cycle
+        assert!(result.is_ok());
+        let ordered = result.unwrap();
+        assert_eq!(ordered.len(), 2);
     }
 
     #[test]

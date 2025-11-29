@@ -1,14 +1,86 @@
-use crate::cli::{ApplyArgs, Command, PlanArgs};
+mod executor;
+mod planner;
+
+use std::sync::Arc;
+
+use crate::cli::{ApplyArgs, Command, PlanArgs, StrategyArg};
 use crate::diff_parser::DiffParseError;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
 use crate::models::PlannedCommit;
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
-use crate::reorganize::ReorganizeError;
-use crate::services::executor::{ExecutionError, PlanExecutor};
-use crate::services::planner::Planner;
-use crate::services::range::RangeResolver;
-use crate::services::strategy::StrategyFactory;
+use crate::reorganize::llm::ClaudeCliClient;
+use crate::reorganize::{
+    GroupByFile, HierarchicalReorganizer, LlmReorganizer, PreserveOriginal, ReorganizeError,
+    Reorganizer, Squash,
+};
+use crate::utils::short_sha;
+
+pub use executor::{ExecutionError, PlanExecutor};
+pub use planner::{PlanDraft, Planner};
+
+/// Factory for instantiating reorganizers from CLI strategy argument.
+#[derive(Clone, Copy, Default)]
+pub struct StrategyFactory;
+
+impl StrategyFactory {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn create(&self, strategy: StrategyArg) -> Box<dyn Reorganizer> {
+        match strategy {
+            StrategyArg::Preserve => Box::new(PreserveOriginal),
+            StrategyArg::ByFile => Box::new(GroupByFile),
+            StrategyArg::Squash => Box::new(Squash),
+            StrategyArg::Llm => Box::new(LlmReorganizer::new(Box::new(ClaudeCliClient::new()))),
+            StrategyArg::Hierarchical => {
+                let client = Arc::new(ClaudeCliClient::new());
+                Box::new(HierarchicalReorganizer::new(Some(client)))
+            }
+        }
+    }
+}
+
+/// Inclusive/exclusive commit range (base is exclusive, head inclusive).
+#[derive(Clone, Debug)]
+pub struct CommitRange {
+    pub base: String,
+    pub head: String,
+}
+
+fn resolve_range<G: GitOps>(
+    git: &G,
+    range: Option<&str>,
+    base_branch: Option<&str>,
+) -> Result<CommitRange, GitError> {
+    match (range, base_branch) {
+        (Some(r), None) => {
+            let parts: Vec<&str> = r.split("..").collect();
+            if parts.len() != 2 {
+                return Err(GitError::CommandFailed(format!(
+                    "Invalid range: {}. Expected 'base..head'",
+                    r
+                )));
+            }
+            Ok(CommitRange {
+                base: git.resolve_ref(parts[0])?,
+                head: git.resolve_ref(parts[1])?,
+            })
+        }
+        (None, Some(branch)) => Ok(CommitRange {
+            base: git.resolve_ref(branch)?,
+            head: git.get_head()?,
+        }),
+        (None, None) => Ok(CommitRange {
+            base: git.find_branch_base()?,
+            head: git.get_head()?,
+        }),
+        (Some(_), Some(_)) => Err(GitError::CommandFailed(
+            "Cannot specify both range and --base".to_string(),
+        )),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -168,8 +240,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             );
         }
 
-        let range =
-            RangeResolver::new(&self.git).resolve(opts.range.as_deref(), opts.base.as_deref())?;
+        let range = resolve_range(&self.git, opts.range.as_deref(), opts.base.as_deref())?;
         println!(
             "Scrambling {}..{}",
             short_sha(&range.base),
@@ -234,7 +305,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             range.head.clone(),
             &plan.planned_commits,
             &plan.hunks,
-            &plan.new_hunks,
             &plan.file_to_commits,
             &plan.new_files_to_commits,
         );
@@ -300,8 +370,4 @@ fn print_planned_commits(commits: &[PlannedCommit], offset: usize) {
         );
     }
     println!();
-}
-
-fn short_sha(sha: &str) -> &str {
-    &sha[..8.min(sha.len())]
 }
