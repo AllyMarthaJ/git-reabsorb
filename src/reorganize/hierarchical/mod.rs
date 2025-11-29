@@ -119,10 +119,13 @@ impl HierarchicalReorganizer {
                 let analyzer = HunkAnalyzer::new(Arc::clone(client))
                     .with_parallelism(self.config.max_parallel);
 
-                analyzer.analyze(hunks).map_err(|e| {
-                    eprintln!("LLM analysis failed, falling back to heuristics: {}", e);
-                    e
-                }).unwrap_or_else(|_| HeuristicAnalyzer::analyze(hunks))
+                analyzer
+                    .analyze(hunks)
+                    .map_err(|e| {
+                        eprintln!("LLM analysis failed, falling back to heuristics: {}", e);
+                        e
+                    })
+                    .unwrap_or_else(|_| HeuristicAnalyzer::analyze(hunks))
             } else {
                 HeuristicAnalyzer::analyze(hunks)
             }
@@ -146,13 +149,16 @@ impl HierarchicalReorganizer {
         };
 
         let clusters = if cluster_client.is_some() {
-            let clusterer = Clusterer::new(cluster_client)
-                .with_config(self.config.cluster_config.clone());
+            let clusterer =
+                Clusterer::new(cluster_client).with_config(self.config.cluster_config.clone());
 
-            clusterer.cluster(hunks, &analysis).map_err(|e| {
-                eprintln!("LLM clustering failed, falling back to heuristics: {}", e);
-                e
-            }).unwrap_or_else(|_| HeuristicClusterer::cluster(hunks, &analysis))
+            clusterer
+                .cluster(hunks, &analysis)
+                .map_err(|e| {
+                    eprintln!("LLM clustering failed, falling back to heuristics: {}", e);
+                    e
+                })
+                .unwrap_or_else(|_| HeuristicClusterer::cluster(hunks, &analysis))
         } else {
             HeuristicClusterer::cluster(hunks, &analysis)
         };
@@ -169,13 +175,16 @@ impl HierarchicalReorganizer {
         };
 
         let commits = if plan_client.is_some() {
-            let planner = CommitPlanner::new(plan_client)
-                .with_parallelism(self.config.max_parallel);
+            let planner =
+                CommitPlanner::new(plan_client).with_parallelism(self.config.max_parallel);
 
-            planner.plan(&clusters, hunks, &analysis).map_err(|e| {
-                eprintln!("LLM planning failed, falling back to heuristics: {}", e);
-                e
-            }).unwrap_or_else(|_| HeuristicPlanner::plan(&clusters, &analysis))
+            planner
+                .plan(&clusters, hunks, &analysis)
+                .map_err(|e| {
+                    eprintln!("LLM planning failed, falling back to heuristics: {}", e);
+                    e
+                })
+                .unwrap_or_else(|_| HeuristicPlanner::plan(&clusters, &analysis))
         } else {
             HeuristicPlanner::plan(&clusters, &analysis)
         };
@@ -185,15 +194,11 @@ impl HierarchicalReorganizer {
         eprintln!("Phase 4: Ordering commits...");
 
         // Phase 4: Order commits
-        let ordered = GlobalOrderer::order(commits, &analysis)
-            .unwrap_or_else(|e| {
-                eprintln!("Ordering failed ({}), using heuristic order", e);
-                // Recover: use heuristic ordering on the original commits
-                HeuristicOrderer::order(
-                    HeuristicPlanner::plan(&clusters, &analysis),
-                    &analysis,
-                )
-            });
+        let ordered = GlobalOrderer::order(commits, &analysis).unwrap_or_else(|e| {
+            eprintln!("Ordering failed ({}), using heuristic order", e);
+            // Recover: use heuristic ordering on the original commits
+            HeuristicOrderer::order(HeuristicPlanner::plan(&clusters, &analysis), &analysis)
+        });
 
         eprintln!("Phase 5: Validating and repairing...");
 
@@ -276,23 +281,17 @@ mod tests {
             make_test_hunk(
                 0,
                 "src/auth/login.rs",
-                vec![
-                    DiffLine::Added("pub fn login() {}".to_string()),
-                ],
+                vec![DiffLine::Added("pub fn login() {}".to_string())],
             ),
             make_test_hunk(
                 1,
                 "src/auth/logout.rs",
-                vec![
-                    DiffLine::Added("pub fn logout() {}".to_string()),
-                ],
+                vec![DiffLine::Added("pub fn logout() {}".to_string())],
             ),
             make_test_hunk(
                 2,
                 "tests/auth_test.rs",
-                vec![
-                    DiffLine::Added("#[test] fn test_auth() {}".to_string()),
-                ],
+                vec![DiffLine::Added("#[test] fn test_auth() {}".to_string())],
             ),
         ];
 

@@ -7,8 +7,8 @@ use crate::models::{Hunk, HunkId};
 use crate::reorganize::llm::LlmClient;
 
 use super::types::{
-    AnalysisResults, ChangeCategory, Cluster, ClusterFormationReason, ClusterId,
-    HierarchicalError, RelationshipResponse,
+    AnalysisResults, ChangeCategory, Cluster, ClusterFormationReason, ClusterId, HierarchicalError,
+    RelationshipResponse,
 };
 
 /// Configuration for clustering behavior
@@ -71,7 +71,10 @@ impl Clusterer {
         clusters = self.balance_clusters(clusters, analysis);
 
         // Step 3: Handle cross-file relationships if LLM is available
-        if self.config.use_llm_relationships && self.client.is_some() && hunks.len() >= self.config.cross_file_threshold {
+        if self.config.use_llm_relationships
+            && self.client.is_some()
+            && hunks.len() >= self.config.cross_file_threshold
+        {
             clusters = self.refine_with_llm(clusters, hunks, analysis)?;
         }
 
@@ -508,10 +511,10 @@ impl HeuristicClusterer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::HunkAnalysis;
-    use std::path::PathBuf;
+    use super::*;
     use crate::models::DiffLine;
+    use std::path::PathBuf;
 
     fn make_test_hunk(id: usize, file: &str) -> Hunk {
         Hunk {
@@ -526,7 +529,12 @@ mod tests {
         }
     }
 
-    fn make_analysis(hunk_id: usize, file: &str, topic: &str, category: ChangeCategory) -> HunkAnalysis {
+    fn make_analysis(
+        hunk_id: usize,
+        file: &str,
+        topic: &str,
+        category: ChangeCategory,
+    ) -> HunkAnalysis {
         HunkAnalysis {
             hunk_id,
             category,
@@ -540,9 +548,24 @@ mod tests {
     #[test]
     fn test_topic_clustering() {
         let mut analysis = AnalysisResults::new();
-        analysis.add(make_analysis(0, "src/auth/login.rs", "auth", ChangeCategory::Feature));
-        analysis.add(make_analysis(1, "src/auth/logout.rs", "auth", ChangeCategory::Feature));
-        analysis.add(make_analysis(2, "src/api/users.rs", "users", ChangeCategory::Feature));
+        analysis.add(make_analysis(
+            0,
+            "src/auth/login.rs",
+            "auth",
+            ChangeCategory::Feature,
+        ));
+        analysis.add(make_analysis(
+            1,
+            "src/auth/logout.rs",
+            "auth",
+            ChangeCategory::Feature,
+        ));
+        analysis.add(make_analysis(
+            2,
+            "src/api/users.rs",
+            "users",
+            ChangeCategory::Feature,
+        ));
 
         let clusters = HeuristicClusterer::cluster(&[], &analysis);
 
@@ -557,10 +580,7 @@ mod tests {
 
     #[test]
     fn test_cluster_validation() {
-        let hunks = vec![
-            make_test_hunk(0, "a.rs"),
-            make_test_hunk(1, "b.rs"),
-        ];
+        let hunks = vec![make_test_hunk(0, "a.rs"), make_test_hunk(1, "b.rs")];
 
         let mut analysis = AnalysisResults::new();
         analysis.add(make_analysis(0, "a.rs", "topic", ChangeCategory::Feature));

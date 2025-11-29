@@ -2,9 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::types::{
-    AnalysisResults, ChangeCategory, ClusterCommit, ClusterId, HierarchicalError,
-};
+use super::types::{AnalysisResults, ChangeCategory, ClusterCommit, ClusterId, HierarchicalError};
 
 /// Orders commits based on dependencies and logical ordering rules
 pub struct GlobalOrderer;
@@ -286,8 +284,8 @@ impl HeuristicOrderer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::HunkAnalysis;
+    use super::*;
     use crate::models::HunkId;
 
     fn make_commit(id: usize, hunk_ids: Vec<usize>, depends_on: Vec<usize>) -> ClusterCommit {

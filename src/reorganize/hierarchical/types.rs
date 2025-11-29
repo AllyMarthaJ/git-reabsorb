@@ -220,7 +220,10 @@ impl AnalysisResults {
     }
 
     pub fn hunks_for_topic(&self, topic: &str) -> &[HunkId] {
-        self.by_topic.get(topic).map(|v| v.as_slice()).unwrap_or(&[])
+        self.by_topic
+            .get(topic)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -295,8 +298,22 @@ mod tests {
         assert_eq!(auth_hunks.len(), 3);
 
         // Check category grouping
-        assert_eq!(results.by_category.get(&ChangeCategory::Feature).unwrap().len(), 2);
-        assert_eq!(results.by_category.get(&ChangeCategory::Test).unwrap().len(), 1);
+        assert_eq!(
+            results
+                .by_category
+                .get(&ChangeCategory::Feature)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            results
+                .by_category
+                .get(&ChangeCategory::Test)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Check file grouping
         assert_eq!(results.by_file.len(), 3);
