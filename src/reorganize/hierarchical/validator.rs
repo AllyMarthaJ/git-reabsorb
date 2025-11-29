@@ -414,21 +414,7 @@ pub fn assign_orphans(
 mod tests {
     use super::super::types::{ChangeCategory, ClusterId, HunkAnalysis};
     use super::*;
-    use crate::models::DiffLine;
-    use std::path::PathBuf;
-
-    fn make_test_hunk(id: usize) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from("test.rs"),
-            old_start: 1,
-            old_count: 3,
-            new_start: 1,
-            new_count: 4,
-            lines: vec![DiffLine::Added("test".to_string())],
-            likely_source_commits: vec![],
-        }
-    }
+    use crate::test_utils::make_hunk;
 
     fn make_commit(id: usize, message: &str, hunk_ids: Vec<usize>) -> ClusterCommit {
         ClusterCommit {
@@ -443,7 +429,7 @@ mod tests {
     #[test]
     fn test_validate_empty_message() {
         let validator = Validator::new(None);
-        let hunks = vec![make_test_hunk(0)];
+        let hunks = vec![make_hunk(0)];
         let commit = make_commit(0, "", vec![0]);
 
         let validations = validator.validate(&[commit], &hunks);
@@ -458,7 +444,7 @@ mod tests {
     #[test]
     fn test_validate_long_message() {
         let validator = Validator::new(None);
-        let hunks = vec![make_test_hunk(0)];
+        let hunks = vec![make_hunk(0)];
         let long_message = "x".repeat(100);
         let commit = make_commit(0, &long_message, vec![0]);
 
@@ -474,7 +460,7 @@ mod tests {
     #[test]
     fn test_validate_invalid_hunk() {
         let validator = Validator::new(None);
-        let hunks = vec![make_test_hunk(0)];
+        let hunks = vec![make_hunk(0)];
         let commit = make_commit(0, "Valid message", vec![0, 999]); // 999 doesn't exist
 
         let validations = validator.validate(&[commit], &hunks);
@@ -489,7 +475,7 @@ mod tests {
     #[test]
     fn test_validate_duplicate_hunk() {
         let validator = Validator::new(None);
-        let hunks = vec![make_test_hunk(0)];
+        let hunks = vec![make_hunk(0)];
         let commit = make_commit(0, "Valid message", vec![0, 0]); // Duplicate
 
         let validations = validator.validate(&[commit], &hunks);
@@ -504,7 +490,7 @@ mod tests {
     #[test]
     fn test_validate_complete_assignment() {
         let validator = Validator::new(None);
-        let hunks = vec![make_test_hunk(0), make_test_hunk(1)];
+        let hunks = vec![make_hunk(0), make_hunk(1)];
         let commits = vec![make_commit(0, "Valid", vec![0])]; // Missing hunk 1
 
         let result = validator.validate_complete_assignment(&commits, &hunks);
@@ -514,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_assign_orphans() {
-        let hunks = vec![make_test_hunk(0), make_test_hunk(1), make_test_hunk(2)];
+        let hunks = vec![make_hunk(0), make_hunk(1), make_hunk(2)];
         let commits = vec![make_commit(0, "Valid", vec![0])]; // Missing 1 and 2
 
         let mut analysis = AnalysisResults::new();

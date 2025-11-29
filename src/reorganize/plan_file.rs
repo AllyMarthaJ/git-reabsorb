@@ -194,6 +194,7 @@ pub fn delete_plan(namespace: &str) -> Result<(), PlanFileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{DiffLine, HunkId};
 
     fn test_hunk() -> Hunk {
         Hunk {

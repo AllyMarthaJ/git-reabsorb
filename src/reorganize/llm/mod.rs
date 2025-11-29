@@ -209,33 +209,28 @@ fn parse_raw_diff(file_path: &str, diff: &str, new_id: usize) -> Result<Hunk, Re
         new_count,
         lines,
         likely_source_commits: Vec::new(),
+        old_missing_newline_at_eof: false,
+        new_missing_newline_at_eof: false,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::make_hunk_full;
 
-    fn make_test_hunk(id: usize) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from("test.rs"),
-            old_start: 1,
-            old_count: 2,
-            new_start: 1,
-            new_count: 3,
-            lines: vec![
+    #[test]
+    fn test_extract_partial_hunk() {
+        let source = make_hunk_full(
+            0,
+            "test.rs",
+            vec![
                 DiffLine::Context("context".to_string()),
                 DiffLine::Added("added".to_string()),
                 DiffLine::Removed("removed".to_string()),
             ],
-            likely_source_commits: vec!["abc".to_string()],
-        }
-    }
-
-    #[test]
-    fn test_extract_partial_hunk() {
-        let source = make_test_hunk(0);
+            vec!["abc".to_string()],
+        );
         let partial = extract_partial_hunk(&source, &[1, 2], 100).unwrap();
 
         assert_eq!(partial.id.0, 100);

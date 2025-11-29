@@ -1855,8 +1855,8 @@ fn helper_two() {
         2,
         "Should have exactly 2 commits after splitting"
     );
-    assert_eq!(commits[0].short_description, "First split commit");
-    assert_eq!(commits[1].short_description, "Second split commit");
+    assert_eq!(commits[0].message.short, "First split commit");
+    assert_eq!(commits[1].message.short, "Second split commit");
 }
 
 /// Test splitting changes across two separate functions in the same file
@@ -2011,7 +2011,7 @@ impl Calculator {
     let source_commits = repo.read_commits(&base, &original_head);
     assert_eq!(source_commits.len(), 1);
     assert_eq!(
-        source_commits[0].short_description,
+        source_commits[0].message.short,
         "Implement add and subtract methods"
     );
 
@@ -2052,7 +2052,7 @@ impl Calculator {
     let new_commits = repo.read_commits(&base, "HEAD");
     assert_eq!(new_commits.len(), 1);
     assert_eq!(
-        new_commits[0].short_description,
+        new_commits[0].message.short,
         "Reorganized: implement both methods"
     );
 }
