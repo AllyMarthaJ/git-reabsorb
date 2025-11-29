@@ -2260,3 +2260,123 @@ fn helper() {}
     let total_changes: usize = planned_commits.iter().map(|c| c.changes.len()).sum();
     assert_eq!(total_changes, hunks.len());
 }
+
+// ============================================================================
+// diff_trees vs working_tree_diff for New Files
+// ============================================================================
+
+/// This test verifies that diff_trees captures new files (including dotfiles like .github/)
+/// while get_working_tree_diff does NOT. This is the root cause of the bug where .github
+/// files were not being picked up during reabsorption.
+#[test]
+fn test_diff_trees_captures_new_files_that_working_tree_diff_misses() {
+    let repo = TestRepo::new();
+
+    // Create initial commit (base)
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Add new files including .github (which was the reported bug)
+    repo.write_file(".github/workflows/ci.yml", "name: CI\non: push\n");
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let head = repo.commit("Add CI workflow and main.rs");
+
+    // BEFORE reset: diff_trees should capture ALL changes including new files
+    let diff_trees_output = repo.git.diff_trees(&base, &head).unwrap();
+
+    assert!(
+        diff_trees_output.contains(".github/workflows/ci.yml"),
+        "diff_trees should capture .github files. Got: {}",
+        diff_trees_output
+    );
+    assert!(
+        diff_trees_output.contains("src/main.rs"),
+        "diff_trees should capture src/main.rs. Got: {}",
+        diff_trees_output
+    );
+
+    // Now reset to base - new files become untracked
+    repo.git.reset_to(&base).unwrap();
+
+    // AFTER reset: get_working_tree_diff does NOT show untracked files
+    let working_tree_diff = repo.git.get_working_tree_diff().unwrap();
+
+    assert!(
+        !working_tree_diff.contains(".github/workflows/ci.yml"),
+        "get_working_tree_diff should NOT show untracked .github files"
+    );
+    assert!(
+        !working_tree_diff.contains("src/main.rs"),
+        "get_working_tree_diff should NOT show untracked src/main.rs"
+    );
+
+    // Verify the files exist but are untracked
+    let status = run_git(&repo.path, &["status", "--porcelain"]);
+    assert!(
+        status.contains("??"),
+        "Should have untracked files. Status: {}",
+        status
+    );
+}
+
+/// Verifies that hunks can be parsed from diff_trees output for new files
+#[test]
+fn test_diff_trees_produces_parseable_hunks_for_new_files() {
+    use git_reabsorb::diff_parser::parse_diff;
+
+    let repo = TestRepo::new();
+
+    // Create initial commit (base)
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Add new files including .github
+    repo.write_file(
+        ".github/workflows/ci.yml",
+        "name: CI\non: [push, pull_request]\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+    );
+    repo.write_file("src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n");
+    repo.stage_all();
+    let head = repo.commit("Add CI and lib");
+
+    // Get diff using diff_trees (the correct approach)
+    let diff_output = repo.git.diff_trees(&base, &head).unwrap();
+
+    // Parse hunks from the diff
+    let hunks = parse_diff(&diff_output, &[head.clone()], 0).unwrap();
+
+    // Should have hunks for both new files
+    let github_hunks: Vec<_> = hunks
+        .iter()
+        .filter(|h| h.file_path.to_string_lossy().contains(".github"))
+        .collect();
+    let lib_hunks: Vec<_> = hunks
+        .iter()
+        .filter(|h| h.file_path.to_string_lossy().contains("lib.rs"))
+        .collect();
+
+    assert!(
+        !github_hunks.is_empty(),
+        "Should have hunks for .github/workflows/ci.yml. All hunks: {:?}",
+        hunks.iter().map(|h| &h.file_path).collect::<Vec<_>>()
+    );
+    assert!(
+        !lib_hunks.is_empty(),
+        "Should have hunks for src/lib.rs"
+    );
+
+    // Verify the hunk content is correct (all additions for new files)
+    let github_hunk = github_hunks[0];
+    let added_lines: Vec<_> = github_hunk
+        .lines
+        .iter()
+        .filter(|l| matches!(l, git_reabsorb::models::DiffLine::Added(_)))
+        .collect();
+    assert!(
+        !added_lines.is_empty(),
+        "New file hunks should have added lines"
+    );
+}
