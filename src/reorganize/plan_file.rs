@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{CommitDescription, DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit};
+use crate::models::{CommitDescription, Hunk, PlannedChange, PlannedCommit};
 
 const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
@@ -30,8 +30,7 @@ pub struct SavedPlan {
     pub original_head: String,
     pub commits: Vec<SavedCommit>,
     pub next_commit_index: usize,
-    pub new_hunks: Vec<SavedHunk>,
-    pub working_tree_hunks: Vec<SavedHunk>,
+    pub working_tree_hunks: Vec<Hunk>,
     pub file_to_commits: Vec<(String, Vec<String>)>,
     pub new_files_to_commits: Vec<(String, Vec<String>)>,
 }
@@ -39,40 +38,8 @@ pub struct SavedPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedCommit {
     pub description: CommitDescription,
-    pub changes: Vec<SavedChange>,
+    pub changes: Vec<PlannedChange>,
     pub created_sha: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SavedChange {
-    #[serde(rename = "existing")]
-    ExistingHunk { id: usize },
-    #[serde(rename = "new")]
-    NewHunk { id: usize },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedHunk {
-    pub id: usize,
-    pub file_path: String,
-    pub old_start: u32,
-    pub old_count: u32,
-    pub new_start: u32,
-    pub new_count: u32,
-    pub lines: Vec<SavedDiffLine>,
-    pub likely_source_commits: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "content")]
-pub enum SavedDiffLine {
-    #[serde(rename = "context")]
-    Context(String),
-    #[serde(rename = "added")]
-    Added(String),
-    #[serde(rename = "removed")]
-    Removed(String),
 }
 
 impl SavedPlan {
@@ -83,7 +50,6 @@ impl SavedPlan {
         original_head: String,
         planned_commits: &[PlannedCommit],
         working_tree_hunks: &[Hunk],
-        new_hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
         new_files_to_commits: &HashMap<String, Vec<String>>,
     ) -> Self {
@@ -94,47 +60,21 @@ impl SavedPlan {
             original_head,
             commits: planned_commits.iter().map(SavedCommit::from).collect(),
             next_commit_index: 0,
-            new_hunks: new_hunks.iter().map(SavedHunk::from).collect(),
-            working_tree_hunks: working_tree_hunks.iter().map(SavedHunk::from).collect(),
-            file_to_commits: file_to_commits
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            new_files_to_commits: new_files_to_commits
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            working_tree_hunks: working_tree_hunks.to_vec(),
+            file_to_commits: file_to_commits.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            new_files_to_commits: new_files_to_commits.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         }
     }
 
     pub fn to_planned_commits(&self) -> Vec<PlannedCommit> {
         self.commits
             .iter()
-            .map(|sc| {
-                let changes = sc
-                    .changes
-                    .iter()
-                    .map(|c| match c {
-                        SavedChange::ExistingHunk { id } => {
-                            PlannedChange::ExistingHunk(HunkId(*id))
-                        }
-                        SavedChange::NewHunk { id } => {
-                            let saved = self
-                                .new_hunks
-                                .iter()
-                                .find(|h| h.id == *id)
-                                .expect("new hunk missing");
-                            PlannedChange::NewHunk(Hunk::from(saved))
-                        }
-                    })
-                    .collect();
-                PlannedCommit::new(sc.description.clone(), changes)
-            })
+            .map(|sc| PlannedCommit::new(sc.description.clone(), sc.changes.clone()))
             .collect()
     }
 
     pub fn get_working_tree_hunks(&self) -> Vec<Hunk> {
-        self.working_tree_hunks.iter().map(Hunk::from).collect()
+        self.working_tree_hunks.clone()
     }
 
     pub fn get_file_to_commits(&self) -> HashMap<String, Vec<String>> {
@@ -165,65 +105,8 @@ impl From<&PlannedCommit> for SavedCommit {
     fn from(pc: &PlannedCommit) -> Self {
         Self {
             description: pc.description.clone(),
-            changes: pc
-                .changes
-                .iter()
-                .map(|c| match c {
-                    PlannedChange::ExistingHunk(id) => SavedChange::ExistingHunk { id: id.0 },
-                    PlannedChange::NewHunk(h) => SavedChange::NewHunk { id: h.id.0 },
-                })
-                .collect(),
+            changes: pc.changes.clone(),
             created_sha: None,
-        }
-    }
-}
-
-impl From<&Hunk> for SavedHunk {
-    fn from(hunk: &Hunk) -> Self {
-        Self {
-            id: hunk.id.0,
-            file_path: hunk.file_path.to_string_lossy().to_string(),
-            old_start: hunk.old_start,
-            old_count: hunk.old_count,
-            new_start: hunk.new_start,
-            new_count: hunk.new_count,
-            lines: hunk.lines.iter().map(SavedDiffLine::from).collect(),
-            likely_source_commits: hunk.likely_source_commits.clone(),
-        }
-    }
-}
-
-impl From<&SavedHunk> for Hunk {
-    fn from(saved: &SavedHunk) -> Self {
-        Self {
-            id: HunkId(saved.id),
-            file_path: PathBuf::from(&saved.file_path),
-            old_start: saved.old_start,
-            old_count: saved.old_count,
-            new_start: saved.new_start,
-            new_count: saved.new_count,
-            lines: saved.lines.iter().map(DiffLine::from).collect(),
-            likely_source_commits: saved.likely_source_commits.clone(),
-        }
-    }
-}
-
-impl From<&DiffLine> for SavedDiffLine {
-    fn from(line: &DiffLine) -> Self {
-        match line {
-            DiffLine::Context(s) => SavedDiffLine::Context(s.clone()),
-            DiffLine::Added(s) => SavedDiffLine::Added(s.clone()),
-            DiffLine::Removed(s) => SavedDiffLine::Removed(s.clone()),
-        }
-    }
-}
-
-impl From<&SavedDiffLine> for DiffLine {
-    fn from(line: &SavedDiffLine) -> Self {
-        match line {
-            SavedDiffLine::Context(s) => DiffLine::Context(s.clone()),
-            SavedDiffLine::Added(s) => DiffLine::Added(s.clone()),
-            SavedDiffLine::Removed(s) => DiffLine::Removed(s.clone()),
         }
     }
 }
@@ -346,7 +229,6 @@ mod tests {
             "base".into(),
             "head".into(),
             &planned,
-            std::slice::from_ref(&hunk),
             std::slice::from_ref(&hunk),
             &HashMap::new(),
             &HashMap::new(),
