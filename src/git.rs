@@ -310,25 +310,25 @@ impl GitOps for Git {
             temp_file.write_all(patch.as_bytes())?;
             temp_file.flush()?;
 
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+            eprintln!(
+                "DEBUG #{}: Patch for {}:\n{}",
+                count,
+                file_path.display(),
+                patch
+            );
+            eprintln!("Patch file: {}", temp_file.path().display());
+            eprintln!("Patch length: {} bytes", patch.len());
+
             // Apply patch to index
-            let result = self.run_git(&[
+            self.run_git(&[
                 "apply",
                 "--cached",
                 "--unidiff-zero",
                 temp_file.path().to_str().unwrap(),
-            ]);
-
-            if let Err(e) = result {
-                // If applying to index fails, try applying to working tree first then staging
-                eprintln!(
-                    "Warning: direct index apply failed for {}, trying alternative method: {}",
-                    file_path.display(),
-                    e
-                );
-
-                // Stage the whole file instead
-                self.run_git(&["add", file_path.to_str().unwrap()])?;
-            }
+            ])?;
         }
 
         Ok(())

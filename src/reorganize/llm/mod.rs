@@ -164,6 +164,8 @@ fn extract_partial_hunk(
         new_count,
         lines: new_lines,
         likely_source_commits: source.likely_source_commits.clone(),
+        old_missing_newline_at_eof: source.old_missing_newline_at_eof,
+        new_missing_newline_at_eof: source.new_missing_newline_at_eof,
     })
 }
 

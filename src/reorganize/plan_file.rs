@@ -325,6 +325,8 @@ mod tests {
                 DiffLine::Added("add".into()),
             ],
             likely_source_commits: vec!["abc".into()],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
         }
     }
 
