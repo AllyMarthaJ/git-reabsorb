@@ -5,7 +5,8 @@ use crate::diff_parser::{parse_diff, DiffParseError};
 use crate::git::{GitError, GitOps};
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
 use crate::reorganize::ReorganizeError;
-use crate::services::strategy::StrategyFactory;
+
+use super::StrategyFactory;
 
 /// Creates commit plans from source commits and hunks.
 pub struct Planner<'a, G: GitOps> {
@@ -96,13 +97,11 @@ impl<'a, G: GitOps> Planner<'a, G> {
         if removed_empty > 0 {
             eprintln!("Note: dropped {} empty commits from plan", removed_empty);
         }
-        let new_hunks = extract_new_hunks(&planned_commits);
 
         Ok(PlanDraft {
             strategy_name,
             planned_commits,
             hunks: hunks.to_vec(),
-            new_hunks,
             file_to_commits: file_to_commits.clone(),
             new_files_to_commits: new_files_to_commits.clone(),
         })
@@ -114,23 +113,8 @@ pub struct PlanDraft {
     pub strategy_name: String,
     pub planned_commits: Vec<PlannedCommit>,
     pub hunks: Vec<Hunk>,
-    pub new_hunks: Vec<Hunk>,
     pub file_to_commits: HashMap<String, Vec<String>>,
     pub new_files_to_commits: HashMap<String, Vec<String>>,
-}
-
-fn extract_new_hunks(planned_commits: &[PlannedCommit]) -> Vec<Hunk> {
-    planned_commits
-        .iter()
-        .flat_map(|c| &c.changes)
-        .filter_map(|change| {
-            if let crate::models::PlannedChange::NewHunk(h) = change {
-                Some(h.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 fn retain_non_empty(planned_commits: &mut Vec<PlannedCommit>) -> usize {
