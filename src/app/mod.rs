@@ -209,12 +209,14 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         self.git.save_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
         println!("Saved pre-reabsorb state to {}", self.pre_reabsorb_ref);
 
-        println!("Resetting to {}...", short_sha(&range.base));
-        self.git.reset_to(&range.base)?;
-
-        let diff_output = self.git.get_working_tree_diff()?;
+        // Get the diff between base and head BEFORE resetting
+        // This ensures we capture new files that would become untracked after reset
+        let diff_output = self.git.diff_trees(&range.base, &range.head)?;
         let hunks = planner.parse_diff_with_commit_mapping(&diff_output, &file_to_commits)?;
         println!("Parsed {} hunks", hunks.len());
+
+        println!("Resetting to {}...", short_sha(&range.base));
+        self.git.reset_to(&range.base)?;
 
         let plan = planner.draft_plan(
             opts.strategy,
