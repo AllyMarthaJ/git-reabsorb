@@ -53,34 +53,17 @@ impl Reorganizer for GroupByFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::DiffLine;
-
-    fn make_hunk(id: usize, file: &str) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from(file),
-            old_start: 1,
-            old_count: 1,
-            new_start: 1,
-            new_count: 1,
-            lines: vec![DiffLine::Added("test".to_string())],
-            likely_source_commits: vec!["abc".to_string()],
-        }
-    }
+    use crate::test_utils::{make_hunk_in_file, make_source_commit};
 
     #[test]
     fn test_group_by_file() {
-        let commits = vec![SourceCommit {
-            sha: "abc".to_string(),
-            short_description: "Original".to_string(),
-            long_description: "Original".to_string(),
-        }];
+        let commits = vec![make_source_commit("abc", "Original")];
 
         let hunks = vec![
-            make_hunk(0, "src/main.rs"),
-            make_hunk(1, "src/lib.rs"),
-            make_hunk(2, "src/main.rs"),
-            make_hunk(3, "tests/test.rs"),
+            make_hunk_in_file(0, "src/main.rs"),
+            make_hunk_in_file(1, "src/lib.rs"),
+            make_hunk_in_file(2, "src/main.rs"),
+            make_hunk_in_file(3, "tests/test.rs"),
         ];
 
         let reorganizer = GroupByFile;

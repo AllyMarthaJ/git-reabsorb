@@ -17,7 +17,7 @@ impl Reorganizer for Squash {
         let hunk_ids: Vec<_> = hunks.iter().map(|h| h.id).collect();
 
         let short = if source_commits.len() == 1 {
-            source_commits[0].short_description.clone()
+            source_commits[0].message.short.clone()
         } else {
             format!("Squashed {} commits", source_commits.len())
         };
@@ -26,7 +26,7 @@ impl Reorganizer for Squash {
         if source_commits.len() > 1 {
             long.push_str("\n\nSquashed commits:\n");
             for commit in source_commits {
-                long.push_str(&format!("- {}\n", commit.short_description));
+                long.push_str(&format!("- {}\n", commit.message.short));
             }
         }
 
@@ -44,35 +44,13 @@ impl Reorganizer for Squash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{DiffLine, HunkId};
-    use std::path::PathBuf;
-
-    fn make_hunk(id: usize) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from("test.rs"),
-            old_start: 1,
-            old_count: 1,
-            new_start: 1,
-            new_count: 1,
-            lines: vec![DiffLine::Added("test".to_string())],
-            likely_source_commits: vec!["abc".to_string()],
-        }
-    }
+    use crate::test_utils::{make_hunk, make_source_commit};
 
     #[test]
     fn test_squash() {
         let commits = vec![
-            SourceCommit {
-                sha: "abc".to_string(),
-                short_description: "First".to_string(),
-                long_description: "First".to_string(),
-            },
-            SourceCommit {
-                sha: "def".to_string(),
-                short_description: "Second".to_string(),
-                long_description: "Second".to_string(),
-            },
+            make_source_commit("abc", "First"),
+            make_source_commit("def", "Second"),
         ];
 
         let hunks = vec![make_hunk(0), make_hunk(1), make_hunk(2)];

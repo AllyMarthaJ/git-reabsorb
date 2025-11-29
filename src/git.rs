@@ -193,15 +193,9 @@ impl GitOps for Git {
             // Get full commit message
             let message = self.run_git(&["log", "-1", "--format=%B", sha])?;
             let message = message.trim();
+            let short = message.lines().next().unwrap_or("").to_string();
 
-            let short_description = message.lines().next().unwrap_or("").to_string();
-            let long_description = message.to_string();
-
-            commits.push(SourceCommit {
-                sha: sha.to_string(),
-                short_description,
-                long_description,
-            });
+            commits.push(SourceCommit::new(sha, short, message));
         }
 
         Ok(commits)

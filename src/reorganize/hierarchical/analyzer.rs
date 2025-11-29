@@ -3,8 +3,9 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::models::{DiffLine, Hunk, HunkId};
+use crate::models::{DiffLine, Hunk, HunkId, SourceCommit};
 use crate::reorganize::llm::LlmClient;
+use crate::utils::{extract_json_str, format_diff_lines};
 
 use super::types::{
     AnalysisResults, ChangeCategory, HierarchicalError, HunkAnalysis, HunkAnalysisResponse,
@@ -145,65 +146,16 @@ Guidelines:
         file_path,
         hunk.old_start,
         hunk.old_start + hunk.old_count,
+        commit_context,
         diff_content
     )
 }
 
-fn format_diff_lines(lines: &[DiffLine]) -> String {
-    lines
-        .iter()
-        .map(|line| match line {
-            DiffLine::Context(s) => format!(" {}", s),
-            DiffLine::Added(s) => format!("+{}", s),
-            DiffLine::Removed(s) => format!("-{}", s),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn parse_analysis_response(response: &str) -> Result<HunkAnalysisResponse, String> {
-    // Try to extract JSON from the response
-    let json_str = extract_json(response)?;
+    let json_str = extract_json_str(response)
+        .ok_or_else(|| format!("No JSON found in response: {}", &response[..200.min(response.len())]))?;
 
     serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {} in: {}", e, json_str))
-}
-
-fn extract_json(response: &str) -> Result<&str, String> {
-    // Try to find JSON in code fence
-    if let Some(start) = response.find("```json") {
-        let content_start = start + 7;
-        let end = response[content_start..]
-            .find("```")
-            .map(|e| content_start + e)
-            .unwrap_or(response.len());
-        return Ok(response[content_start..end].trim());
-    }
-
-    // Try to find JSON in generic code fence
-    if let Some(start) = response.find("```") {
-        let content_start = start + 3;
-        let line_end = response[content_start..]
-            .find('\n')
-            .map(|n| content_start + n + 1)
-            .unwrap_or(content_start);
-        let end = response[line_end..]
-            .find("```")
-            .map(|e| line_end + e)
-            .unwrap_or(response.len());
-        return Ok(response[line_end..end].trim());
-    }
-
-    // Try to find raw JSON
-    if let Some(start) = response.find('{') {
-        if let Some(end) = response.rfind('}') {
-            return Ok(response[start..=end].trim());
-        }
-    }
-
-    Err(format!(
-        "No JSON found in response: {}",
-        &response[..200.min(response.len())]
-    ))
 }
 
 fn normalize_topic(topic: &str) -> String {

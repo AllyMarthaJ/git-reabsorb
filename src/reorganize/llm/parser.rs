@@ -127,25 +127,7 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{DiffLine, HunkId};
-    use std::path::PathBuf;
-
-    fn make_test_hunk(id: usize) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from("test.rs"),
-            old_start: 1,
-            old_count: 2,
-            new_start: 1,
-            new_count: 3,
-            lines: vec![
-                DiffLine::Context("line1".to_string()),
-                DiffLine::Added("line2".to_string()),
-                DiffLine::Removed("line3".to_string()),
-            ],
-            likely_source_commits: vec!["abc123".to_string()],
-        }
-    }
+    use crate::test_utils::make_hunk;
 
     #[test]
     fn test_extract_json_with_code_fence() {
@@ -191,7 +173,7 @@ That's it!"#;
 
     #[test]
     fn test_validate_plan_valid() {
-        let hunks = vec![make_test_hunk(0), make_test_hunk(1)];
+        let hunks = vec![make_hunk(0), make_hunk(1)];
         let plan = LlmPlan {
             commits: vec![make_llm_commit(
                 "Test",
@@ -205,7 +187,7 @@ That's it!"#;
 
     #[test]
     fn test_validate_plan_invalid_hunk_id() {
-        let hunks = vec![make_test_hunk(0)];
+        let hunks = vec![make_hunk(0)];
         let plan = LlmPlan {
             commits: vec![make_llm_commit(
                 "Test",
@@ -220,7 +202,7 @@ That's it!"#;
 
     #[test]
     fn test_validate_plan_duplicate_hunk() {
-        let hunks = vec![make_test_hunk(0)];
+        let hunks = vec![make_hunk(0)];
         let plan = LlmPlan {
             commits: vec![make_llm_commit(
                 "Test",
@@ -236,7 +218,7 @@ That's it!"#;
     #[test]
     fn test_validate_plan_unassigned_hunks() {
         // Two hunks exist but only one is assigned - should error so we can retry
-        let hunks = vec![make_test_hunk(0), make_test_hunk(1)];
+        let hunks = vec![make_hunk(0), make_hunk(1)];
         let plan = LlmPlan {
             commits: vec![make_llm_commit(
                 "Test",

@@ -38,10 +38,7 @@ impl Reorganizer for PreserveOriginal {
         for source in source_commits {
             if let Some(hunk_ids) = hunks_by_commit.get(source.sha.as_str()) {
                 planned.push(PlannedCommit::from_hunk_ids(
-                    CommitDescription::new(
-                        source.short_description.clone(),
-                        source.long_description.clone(),
-                    ),
+                    source.message.clone(),
                     hunk_ids.clone(),
                 ));
             }
@@ -58,41 +55,19 @@ impl Reorganizer for PreserveOriginal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::DiffLine;
-    use std::path::PathBuf;
-
-    fn make_hunk(id: usize, sha: &str) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from("test.rs"),
-            old_start: 1,
-            old_count: 1,
-            new_start: 1,
-            new_count: 1,
-            lines: vec![DiffLine::Added("test".to_string())],
-            likely_source_commits: vec![sha.to_string()],
-        }
-    }
+    use crate::test_utils::make_hunk_with_source;
 
     #[test]
     fn test_preserve_original() {
         let commits = vec![
-            SourceCommit {
-                sha: "abc".to_string(),
-                short_description: "First commit".to_string(),
-                long_description: "First commit\n\nDetails".to_string(),
-            },
-            SourceCommit {
-                sha: "def".to_string(),
-                short_description: "Second commit".to_string(),
-                long_description: "Second commit".to_string(),
-            },
+            SourceCommit::new("abc", "First commit", "First commit\n\nDetails"),
+            SourceCommit::new("def", "Second commit", "Second commit"),
         ];
 
         let hunks = vec![
-            make_hunk(0, "abc"),
-            make_hunk(1, "abc"),
-            make_hunk(2, "def"),
+            make_hunk_with_source(0, "test.rs", vec!["abc".to_string()]),
+            make_hunk_with_source(1, "test.rs", vec!["abc".to_string()]),
+            make_hunk_with_source(2, "test.rs", vec!["def".to_string()]),
         ];
 
         let reorganizer = PreserveOriginal;

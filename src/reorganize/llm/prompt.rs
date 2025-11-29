@@ -9,7 +9,7 @@ pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmCont
         .iter()
         .map(|c| CommitContext {
             sha: c.sha.clone(),
-            message: c.long_description.clone(),
+            message: c.message.long.clone(),
         })
         .collect();
 
@@ -138,31 +138,23 @@ Analyze the hunks above and reorganize them into logical commits. Output ONLY va
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::HunkId;
-    use std::path::PathBuf;
+    use crate::models::DiffLine;
+    use crate::test_utils::{make_hunk_full, make_source_commit};
 
     #[test]
     fn test_build_context() {
-        let commits = vec![SourceCommit {
-            sha: "abc123".to_string(),
-            short_description: "Test commit".to_string(),
-            long_description: "Test commit\n\nDetails here".to_string(),
-        }];
+        let commits = vec![make_source_commit("abc123", "Test commit")];
 
-        let hunks = vec![Hunk {
-            id: HunkId(0),
-            file_path: PathBuf::from("src/main.rs"),
-            old_start: 1,
-            old_count: 3,
-            new_start: 1,
-            new_count: 4,
-            lines: vec![
+        let hunks = vec![make_hunk_full(
+            0,
+            "src/main.rs",
+            vec![
                 DiffLine::Context("fn main() {".to_string()),
                 DiffLine::Added("    println!(\"Hello\");".to_string()),
                 DiffLine::Context("}".to_string()),
             ],
-            likely_source_commits: vec!["abc123".to_string()],
-        }];
+            vec!["abc123".to_string()],
+        )];
 
         let context = build_context(&commits, &hunks);
         assert_eq!(context.source_commits.len(), 1);

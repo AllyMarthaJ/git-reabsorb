@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// Unique identifier for a hunk within a reabsorb operation
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HunkId(pub usize);
 
 impl std::fmt::Display for HunkId {
@@ -11,21 +13,33 @@ impl std::fmt::Display for HunkId {
 }
 
 /// A commit read from the git history
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceCommit {
     pub sha: String,
-    pub short_description: String,
-    pub long_description: String,
+    pub message: CommitDescription,
+}
+
+impl SourceCommit {
+    pub fn new(sha: impl Into<String>, short: impl Into<String>, long: impl Into<String>) -> Self {
+        Self {
+            sha: sha.into(),
+            message: CommitDescription::new(short, long),
+        }
+    }
 }
 
 /// A single line in a diff
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "content")]
 pub enum DiffLine {
     /// Unchanged context line
+    #[serde(rename = "context")]
     Context(String),
     /// Line added in this change
+    #[serde(rename = "added")]
     Added(String),
     /// Line removed in this change
+    #[serde(rename = "removed")]
     Removed(String),
 }
 
@@ -34,9 +48,10 @@ pub enum DiffLine {
 /// These hunks are parsed from the unified diff between base and final state,
 /// so all line numbers are relative to the same base. This means hunks can be
 /// applied independently (as long as they don't overlap).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hunk {
     pub id: HunkId,
+    #[serde(with = "path_serde")]
     pub file_path: PathBuf,
     /// Starting line number in the base (original) file
     pub old_start: u32,
@@ -134,26 +149,18 @@ impl CommitDescription {
 }
 
 /// A change to include in a planned commit
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
 pub enum PlannedChange {
     /// Reference to an existing hunk by ID
+    #[serde(rename = "existing")]
     ExistingHunk(HunkId),
     /// A new hunk (from splitting/merging/LLM generation)
+    #[serde(rename = "new")]
     NewHunk(Hunk),
 }
 
 impl PlannedChange {
-    /// Get the file path for this change
-    #[must_use]
-    pub fn file_path(&self) -> &std::path::Path {
-        match self {
-            PlannedChange::ExistingHunk(_) => {
-                panic!("file_path() called on ExistingHunk - resolve first")
-            }
-            PlannedChange::NewHunk(hunk) => &hunk.file_path,
-        }
-    }
-
     /// Resolve this change to a concrete Hunk
     #[must_use]
     pub fn resolve<'a>(&'a self, hunks: &'a [Hunk]) -> Option<&'a Hunk> {
@@ -165,7 +172,7 @@ impl PlannedChange {
 }
 
 /// A planned commit - the output of reorganization
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedCommit {
     pub description: CommitDescription,
     pub changes: Vec<PlannedChange>,
