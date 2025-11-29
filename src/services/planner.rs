@@ -29,7 +29,7 @@ impl<'a, G: GitOps> Planner<'a, G> {
     pub fn build_file_to_commits_map(
         &self,
         source_commits: &[SourceCommit],
-    ) -> Result<(HashMap<String, Vec<String>>, HashMap<String, Vec<String>>), GitError> {
+    ) -> Result<FileCommitMaps, GitError> {
         let mut file_to_commits: HashMap<String, Vec<String>> = HashMap::new();
         let mut new_files_to_commits: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -138,6 +138,8 @@ fn retain_non_empty(planned_commits: &mut Vec<PlannedCommit>) -> usize {
     planned_commits.retain(|c| !c.changes.is_empty());
     before - planned_commits.len()
 }
+
+type FileCommitMaps = (HashMap<String, Vec<String>>, HashMap<String, Vec<String>>);
 
 #[cfg(test)]
 mod tests {
