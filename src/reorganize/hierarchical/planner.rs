@@ -132,40 +132,71 @@ fn plan_single_cluster(
 ) -> Result<Vec<ClusterCommit>, String> {
     let prompt = build_commit_prompt(cluster, hunks, analysis);
 
-    let response = client
-        .complete(&prompt)
-        .map_err(|e| format!("LLM error: {}", e))?;
+    const MAX_RETRIES: u32 = 3;
+    let mut last_error = String::new();
 
-    let plan = parse_commit_response(&response)?;
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            eprintln!(
+                "  Retrying cluster {} (attempt {}/{}): {}",
+                cluster.id.0,
+                attempt + 1,
+                MAX_RETRIES,
+                last_error
+            );
+            // Exponential backoff: 100ms, 200ms, 400ms
+            std::thread::sleep(std::time::Duration::from_millis(100 * (1 << attempt)));
+        }
 
-    if plan.should_split && plan.split_groups.is_some() {
-        // Split into multiple commits
-        let groups = plan.split_groups.unwrap();
-        Ok(groups
-            .into_iter()
-            .enumerate()
-            .map(|(i, group)| ClusterCommit {
-                cluster_id: ClusterId(cluster.id.0 * 1000 + i), // Sub-cluster ID
-                short_message: group.short_message,
-                long_message: group.long_message,
-                hunk_ids: group.hunk_ids.into_iter().map(HunkId).collect(),
-                depends_on: if i > 0 {
-                    vec![ClusterId(cluster.id.0 * 1000 + i - 1)]
-                } else {
-                    Vec::new()
-                },
-            })
-            .collect())
-    } else {
-        // Single commit for this cluster
-        Ok(vec![ClusterCommit {
-            cluster_id: cluster.id,
-            short_message: plan.short_message,
-            long_message: plan.long_message,
-            hunk_ids: cluster.hunk_ids.clone(),
-            depends_on: Vec::new(),
-        }])
+        let response = match client.complete(&prompt) {
+            Ok(r) => r,
+            Err(e) => {
+                last_error = format!("LLM error: {}", e);
+                continue;
+            }
+        };
+
+        let plan = match parse_commit_response(&response) {
+            Ok(p) => p,
+            Err(e) => {
+                last_error = format!("Failed to parse commit plan: {}", e);
+                continue;
+            }
+        };
+
+        // Successfully parsed - return the result
+        if plan.should_split && plan.split_groups.is_some() {
+            // Split into multiple commits
+            let groups = plan.split_groups.unwrap();
+            return Ok(groups
+                .into_iter()
+                .enumerate()
+                .map(|(i, group)| ClusterCommit {
+                    cluster_id: ClusterId(cluster.id.0 * 1000 + i), // Sub-cluster ID
+                    short_message: group.short_message,
+                    long_message: group.long_message,
+                    hunk_ids: group.hunk_ids.into_iter().map(HunkId).collect(),
+                    depends_on: if i > 0 {
+                        vec![ClusterId(cluster.id.0 * 1000 + i - 1)]
+                    } else {
+                        Vec::new()
+                    },
+                })
+                .collect());
+        } else {
+            // Single commit for this cluster
+            return Ok(vec![ClusterCommit {
+                cluster_id: cluster.id,
+                short_message: plan.short_message,
+                long_message: plan.long_message,
+                hunk_ids: cluster.hunk_ids.clone(),
+                depends_on: Vec::new(),
+            }]);
+        }
     }
+
+    // All retries exhausted
+    Err(last_error)
 }
 
 fn build_commit_prompt(

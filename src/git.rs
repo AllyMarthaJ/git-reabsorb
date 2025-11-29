@@ -58,6 +58,9 @@ pub trait GitOps {
     /// Get diff between two tree-ish references
     fn diff_trees(&self, left: &str, right: &str) -> Result<String, GitError>;
 
+    /// Get diff for a specific file between index and working tree
+    fn diff_file_in_working_tree(&self, file_path: &str) -> Result<String, GitError>;
+
     /// Get list of files changed in a specific commit
     fn get_files_changed_in_commit(&self, commit_sha: &str) -> Result<Vec<String>, GitError>;
 
@@ -99,6 +102,9 @@ pub trait GitOps {
 
     /// Get the current branch name ("HEAD" if detached)
     fn current_branch_name(&self) -> Result<String, GitError>;
+
+    /// Check if a file exists in the git index
+    fn file_in_index(&self, file_path: &Path) -> Result<bool, GitError>;
 }
 
 /// Real implementation of GitOps that calls git commands
@@ -210,12 +216,20 @@ impl GitOps for Git {
     }
 
     fn get_working_tree_diff(&self) -> Result<String, GitError> {
-        let output = self.run_git(&["diff", "HEAD", "--no-color"])?;
+        // Disable rename detection to get explicit deletion and creation hunks
+        // This ensures renamed files are handled as delete + create, not just modify
+        let output = self.run_git(&["diff", "HEAD", "--no-color", "--no-renames"])?;
         Ok(output)
     }
 
     fn diff_trees(&self, left: &str, right: &str) -> Result<String, GitError> {
-        let output = self.run_git(&["diff", left, right, "--no-color"])?;
+        // Disable rename detection to get explicit deletion and creation hunks
+        let output = self.run_git(&["diff", left, right, "--no-color", "--no-renames"])?;
+        Ok(output)
+    }
+
+    fn diff_file_in_working_tree(&self, file_path: &str) -> Result<String, GitError> {
+        let output = self.run_git(&["diff", "--no-color", "--", file_path])?;
         Ok(output)
     }
 
@@ -391,6 +405,11 @@ impl GitOps for Git {
         let output = self.run_git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
         Ok(output.trim().to_string())
     }
+
+    fn file_in_index(&self, file_path: &Path) -> Result<bool, GitError> {
+        let output = self.run_git(&["ls-files", "--", file_path.to_str().unwrap()])?;
+        Ok(!output.trim().is_empty())
+    }
 }
 
 /// Create a unified diff patch for a single file from multiple hunks
@@ -399,9 +418,25 @@ fn create_patch_for_file(file_path: &Path, hunks: &[&Hunk]) -> String {
 
     let path_str = file_path.to_string_lossy();
 
-    // Patch header
-    patch.push_str(&format!("--- a/{}\n", path_str));
-    patch.push_str(&format!("+++ b/{}\n", path_str));
+    // Check if this is a new file or deleted file by looking at the first hunk
+    let is_new_file = hunks.first().map(|h| h.old_count == 0).unwrap_or(false);
+    let is_deleted_file = hunks.first().map(|h| h.new_count == 0).unwrap_or(false);
+
+    // Patch header - handle new files and deletions
+    let old_path = if is_new_file {
+        "/dev/null".to_string()
+    } else {
+        format!("a/{}", path_str)
+    };
+
+    let new_path = if is_deleted_file {
+        "/dev/null".to_string()
+    } else {
+        format!("b/{}", path_str)
+    };
+
+    patch.push_str(&format!("--- {}\n", old_path));
+    patch.push_str(&format!("+++ {}\n", new_path));
 
     // Add each hunk
     for hunk in hunks {
@@ -433,6 +468,8 @@ mod tests {
                 DiffLine::Context("}".to_string()),
             ],
             likely_source_commits: vec!["abc123".to_string()],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
         };
 
         let patch = create_patch_for_file(Path::new("test.rs"), &[&hunk]);
