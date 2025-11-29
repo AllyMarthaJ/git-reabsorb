@@ -442,92 +442,11 @@ fn parse_relationship_response(response: &str) -> Result<RelationshipResponse, H
         .map_err(|e| HierarchicalError::LlmError(format!("Failed to parse relationships: {}", e)))
 }
 
-/// Fallback clusterer that doesn't use LLM
-pub struct HeuristicClusterer;
-
-impl HeuristicClusterer {
-    pub fn cluster(_hunks: &[Hunk], analysis: &AnalysisResults) -> Vec<Cluster> {
-        // Simple strategy: cluster by topic, then by file
-        let mut clusters = Vec::new();
-        let mut next_id = 0;
-
-        // First pass: group by topic
-        for (topic, hunk_ids) in &analysis.by_topic {
-            if hunk_ids.is_empty() {
-                continue;
-            }
-
-            let categories: HashSet<ChangeCategory> = hunk_ids
-                .iter()
-                .filter_map(|id| analysis.get(*id))
-                .map(|a| a.category)
-                .collect();
-
-            clusters.push(Cluster {
-                id: ClusterId(next_id),
-                hunk_ids: hunk_ids.clone(),
-                topic: topic.clone(),
-                categories,
-                formation_reason: ClusterFormationReason::SameTopic(topic.clone()),
-            });
-
-            next_id += 1;
-        }
-
-        // If no topics, fall back to file-based clustering
-        if clusters.is_empty() {
-            for (file_path, hunk_ids) in &analysis.by_file {
-                if hunk_ids.is_empty() {
-                    continue;
-                }
-
-                let categories: HashSet<ChangeCategory> = hunk_ids
-                    .iter()
-                    .filter_map(|id| analysis.get(*id))
-                    .map(|a| a.category)
-                    .collect();
-
-                // Derive topic from file path
-                let topic = std::path::Path::new(file_path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "general".to_string());
-
-                clusters.push(Cluster {
-                    id: ClusterId(next_id),
-                    hunk_ids: hunk_ids.clone(),
-                    topic,
-                    categories,
-                    formation_reason: ClusterFormationReason::SameFile(file_path.clone()),
-                });
-
-                next_id += 1;
-            }
-        }
-
-        clusters
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::types::HunkAnalysis;
     use super::*;
-    use crate::models::DiffLine;
-    use std::path::PathBuf;
-
-    fn make_test_hunk(id: usize, file: &str) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from(file),
-            old_start: 1,
-            old_count: 3,
-            new_start: 1,
-            new_count: 4,
-            lines: vec![DiffLine::Added("test".to_string())],
-            likely_source_commits: vec![],
-        }
-    }
+    use crate::test_utils::make_hunk_in_file;
 
     fn make_analysis(
         hunk_id: usize,
