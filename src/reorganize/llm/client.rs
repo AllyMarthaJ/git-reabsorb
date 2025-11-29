@@ -4,7 +4,7 @@ use std::process::Command;
 
 use super::types::LlmError;
 
-pub trait LlmClient {
+pub trait LlmClient: Send + Sync {
     fn complete(&self, prompt: &str) -> Result<String, LlmError>;
 }
 

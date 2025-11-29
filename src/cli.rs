@@ -79,6 +79,8 @@ pub enum StrategyArg {
     ByFile,
     /// Squash all changes into a single commit
     Squash,
-    /// Use LLM to intelligently reorganize commits
+    /// Use LLM to intelligently reorganize commits (single-shot)
     Llm,
+    /// Multi-phase hierarchical reorganization (scales to large changes)
+    Hierarchical,
 }

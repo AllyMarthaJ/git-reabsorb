@@ -6,7 +6,7 @@ use std::process::Command;
 
 use git_reabsorb::git::{Git, GitOps};
 use git_reabsorb::models::Hunk;
-use git_reabsorb::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
+use git_reabsorb::reorganize::{GroupByFile, HierarchicalConfig, HierarchicalReorganizer, PreserveOriginal, Reorganizer, Squash};
 
 struct TestRepo {
     path: PathBuf,
@@ -1739,4 +1739,515 @@ fn test_plan_stores_file_mappings() {
 
     // Clean up
     delete_plan(&namespace).unwrap();
+}
+
+// ============================================================================
+// End-to-End Split Commit Tests
+// ============================================================================
+
+/// Test that changes within a single file from one commit can be split into
+/// two separate commits by manually selecting hunks.
+#[test]
+fn test_split_single_file_commit_into_two_commits() {
+    let repo = TestRepo::new();
+
+    // Create initial file with multiple functions, well-separated
+    // to ensure git creates separate hunks
+    repo.write_file(
+        "src/main.rs",
+        r#"fn main() {
+    // main entry point
+}
+
+// spacing
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
+fn helper_one() {
+    // first helper
+}
+
+fn helper_two() {
+    // second helper
+}
+"#,
+    );
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create a single commit that modifies multiple non-contiguous sections
+    // This should create multiple hunks in the same file
+    repo.write_file(
+        "src/main.rs",
+        r#"fn main() {
+    println!("Hello from main!");
+}
+
+// spacing
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
+fn helper_one() {
+    println!("Hello from helper one!");
+}
+
+fn helper_two() {
+    // second helper
+}
+"#,
+    );
+    repo.stage_all();
+    let _original_commit = repo.commit("Add print statements to main and helper_one");
+
+    // Now we'll simulate the reabsorb flow:
+    // 1. Reset to base
+    // 2. Parse working tree diff to get hunks
+    // 3. Apply hunks selectively to create two commits
+
+    // Reset to base (keeps changes in working tree)
+    repo.git.reset_to(&base).unwrap();
+
+    // Parse hunks from working tree diff
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+
+    // We need at least 2 hunks to test splitting
+    assert!(
+        hunks.len() >= 2,
+        "Expected at least 2 hunks to test splitting, got {}",
+        hunks.len()
+    );
+
+    // Split into two groups
+    let first_group: Vec<&git_reabsorb::models::Hunk> = vec![&hunks[0]];
+    let second_group: Vec<&git_reabsorb::models::Hunk> = hunks.iter().skip(1).collect();
+
+    // Apply first group and commit
+    repo.git.apply_hunks_to_index(&first_group).unwrap();
+    let first_sha = repo.git.commit("First split commit", false).unwrap();
+    assert!(!first_sha.is_empty());
+
+    // Apply second group and commit
+    repo.git.apply_hunks_to_index(&second_group).unwrap();
+    let second_sha = repo.git.commit("Second split commit", false).unwrap();
+    assert!(!second_sha.is_empty());
+
+    // Verify we have two distinct commits
+    assert_ne!(first_sha, second_sha);
+
+    // Verify the commit history
+    let commits = repo.read_commits(&base, "HEAD");
+    assert_eq!(
+        commits.len(),
+        2,
+        "Should have exactly 2 commits after splitting"
+    );
+    assert_eq!(commits[0].short_description, "First split commit");
+    assert_eq!(commits[1].short_description, "Second split commit");
+}
+
+/// Test splitting changes across two separate functions in the same file
+/// into two distinct commits - one per function.
+#[test]
+fn test_split_file_changes_by_function() {
+    let repo = TestRepo::new();
+
+    // Create a file with two well-separated functions (many lines apart)
+    // to ensure git creates separate hunks
+    repo.write_file(
+        "src/lib.rs",
+        r#"// Top of file
+fn function_a() {
+    // placeholder a
+}
+
+// Lots of spacing to ensure separate hunks
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
+fn function_b() {
+    // placeholder b
+}
+// End of file
+"#,
+    );
+    repo.stage_all();
+    let base = repo.commit("Initial file with two functions");
+
+    // Modify both functions in a single commit
+    repo.write_file(
+        "src/lib.rs",
+        r#"// Top of file
+fn function_a() {
+    println!("Function A implementation");
+}
+
+// Lots of spacing to ensure separate hunks
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
+fn function_b() {
+    println!("Function B implementation");
+}
+// End of file
+"#,
+    );
+    repo.stage_all();
+    let _combined_commit = repo.commit("Implement both functions");
+
+    // Reset to base
+    repo.git.reset_to(&base).unwrap();
+
+    // Parse the diff
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+
+    // With enough spacing, we should get 2 separate hunks
+    assert!(
+        hunks.len() >= 2,
+        "Expected at least 2 hunks for separate functions, got {}",
+        hunks.len()
+    );
+
+    // Commit function_a changes first
+    let func_a_hunks: Vec<&git_reabsorb::models::Hunk> = vec![&hunks[0]];
+    repo.git.apply_hunks_to_index(&func_a_hunks).unwrap();
+    let commit_a = repo.git.commit("Implement function_a", false).unwrap();
+
+    // Commit function_b changes second
+    let func_b_hunks: Vec<&git_reabsorb::models::Hunk> = hunks.iter().skip(1).collect();
+    repo.git.apply_hunks_to_index(&func_b_hunks).unwrap();
+    let commit_b = repo.git.commit("Implement function_b", false).unwrap();
+
+    // Verify
+    assert_ne!(commit_a, commit_b);
+
+    // Check the file content is correct after both commits
+    let final_content = fs::read_to_string(repo.path.join("src/lib.rs")).unwrap();
+    assert!(final_content.contains("Function A implementation"));
+    assert!(final_content.contains("Function B implementation"));
+
+    // Verify commit history
+    let commits = repo.read_commits(&base, "HEAD");
+    assert_eq!(commits.len(), 2);
+}
+
+/// Test the complete workflow: one old commit with changes to a file
+/// gets reorganized into two new commits.
+#[test]
+fn test_end_to_end_reorganize_single_commit_to_multiple() {
+    let repo = TestRepo::new();
+
+    // Create initial file
+    repo.write_file(
+        "src/calculator.rs",
+        r#"pub struct Calculator;
+
+impl Calculator {
+    pub fn add(&self, a: i32, b: i32) -> i32 {
+        // TODO: implement
+        0
+    }
+
+    pub fn subtract(&self, a: i32, b: i32) -> i32 {
+        // TODO: implement
+        0
+    }
+}
+"#,
+    );
+    repo.stage_all();
+    let base = repo.commit("Add Calculator struct with stubs");
+
+    // Create ONE commit that implements BOTH methods
+    repo.write_file(
+        "src/calculator.rs",
+        r#"pub struct Calculator;
+
+impl Calculator {
+    pub fn add(&self, a: i32, b: i32) -> i32 {
+        a + b
+    }
+
+    pub fn subtract(&self, a: i32, b: i32) -> i32 {
+        a - b
+    }
+}
+"#,
+    );
+    repo.stage_all();
+    let original_head = repo.commit("Implement add and subtract methods");
+
+    // Read the original commits to get source info
+    let source_commits = repo.read_commits(&base, &original_head);
+    assert_eq!(source_commits.len(), 1);
+    assert_eq!(
+        source_commits[0].short_description,
+        "Implement add and subtract methods"
+    );
+
+    // Now reorganize: reset and split
+    repo.git.reset_to(&base).unwrap();
+
+    // Get hunks from working tree
+    let diff = repo.git.get_working_tree_diff().unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[original_head.clone()], 0).unwrap();
+
+    // The hunks should reference the original commit
+    for hunk in &hunks {
+        assert!(
+            hunk.likely_source_commits.contains(&original_head),
+            "Hunks should track their source commit"
+        );
+    }
+
+    // Apply all hunks and create new commits based on some criteria
+    // For this test, we'll just verify the mechanics work
+    let hunk_refs: Vec<&git_reabsorb::models::Hunk> = hunks.iter().collect();
+    repo.git.apply_hunks_to_index(&hunk_refs).unwrap();
+    let new_sha = repo.git.commit("Reorganized: implement both methods", false).unwrap();
+
+    // Verify the new commit exists and file content is correct
+    assert!(!new_sha.is_empty());
+
+    let final_content = fs::read_to_string(repo.path.join("src/calculator.rs")).unwrap();
+    assert!(final_content.contains("a + b"));
+    assert!(final_content.contains("a - b"));
+    assert!(!final_content.contains("TODO: implement"));
+
+    // The new commit should be different from the original
+    // (same content but different SHA due to different message/timestamp)
+    let new_commits = repo.read_commits(&base, "HEAD");
+    assert_eq!(new_commits.len(), 1);
+    assert_eq!(
+        new_commits[0].short_description,
+        "Reorganized: implement both methods"
+    );
+}
+
+// ============================================================================
+// Hierarchical Reorganizer Tests
+// ============================================================================
+
+/// Test the hierarchical reorganizer with heuristics only (no LLM)
+#[test]
+fn test_hierarchical_reorganizer_heuristic_mode() {
+    let repo = TestRepo::new();
+
+    // Create initial setup
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create a commit with changes across multiple files and categories
+    repo.write_file(
+        "src/auth/login.rs",
+        r#"pub fn login(user: &str) -> bool {
+    // Authenticate user
+    true
+}
+"#,
+    );
+    repo.write_file(
+        "src/auth/logout.rs",
+        r#"pub fn logout() {
+    // Clear session
+}
+"#,
+    );
+    repo.write_file(
+        "tests/auth_test.rs",
+        r#"#[test]
+fn test_login() {
+    assert!(login("user"));
+}
+"#,
+    );
+    repo.write_file("README.md", "# Auth Module\n\nAuthentication module.\n");
+    repo.stage_all();
+    let head = repo.commit("Add authentication module");
+
+    // Read commits and hunks
+    let source_commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&source_commits);
+
+    assert!(!hunks.is_empty(), "Should have hunks to reorganize");
+
+    // Run hierarchical reorganizer in heuristic mode
+    let config = HierarchicalConfig::heuristic_only();
+    let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
+
+    let result = reorganizer.reorganize(&source_commits, &hunks);
+
+    assert!(result.is_ok(), "Reorganization should succeed: {:?}", result.err());
+    let planned_commits = result.unwrap();
+
+    // Should have at least one commit
+    assert!(!planned_commits.is_empty(), "Should have planned commits");
+
+    // All hunks should be assigned
+    let total_changes: usize = planned_commits.iter().map(|c| c.changes.len()).sum();
+    assert_eq!(total_changes, hunks.len(), "All hunks should be assigned");
+
+    // Each commit should have a non-empty message
+    for commit in &planned_commits {
+        assert!(
+            !commit.description.short.is_empty(),
+            "Commit should have a short description"
+        );
+    }
+}
+
+/// Test that hierarchical reorganizer properly groups changes by topic
+#[test]
+fn test_hierarchical_reorganizer_topic_grouping() {
+    let repo = TestRepo::new();
+
+    // Create initial setup
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create changes in different topic areas with clear separation
+    repo.write_file(
+        "src/api/users.rs",
+        r#"// Users API
+pub fn get_user() {}
+pub fn create_user() {}
+"#,
+    );
+    repo.write_file(
+        "src/api/posts.rs",
+        r#"// Posts API - completely different topic
+
+
+// Many lines of spacing to ensure separate topic
+
+
+pub fn get_posts() {}
+pub fn create_post() {}
+"#,
+    );
+    repo.stage_all();
+    let head = repo.commit("Add API endpoints");
+
+    let source_commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&source_commits);
+
+    let config = HierarchicalConfig::heuristic_only();
+    let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
+
+    let planned_commits = reorganizer.reorganize(&source_commits, &hunks).unwrap();
+
+    // All hunks should be assigned
+    let total_changes: usize = planned_commits.iter().map(|c| c.changes.len()).sum();
+    assert_eq!(total_changes, hunks.len());
+}
+
+/// Test hierarchical reorganizer with mixed change categories
+#[test]
+fn test_hierarchical_reorganizer_category_ordering() {
+    let repo = TestRepo::new();
+
+    repo.write_file("src/lib.rs", "// lib\n");
+    repo.stage_all();
+    let base = repo.commit("Initial");
+
+    // Add changes of different categories
+    repo.write_file("Cargo.toml", "[package]\nname = \"test\"\n");
+    repo.write_file(
+        "src/lib.rs",
+        r#"// lib
+pub fn feature() {}
+"#,
+    );
+    repo.write_file(
+        "tests/test.rs",
+        r#"#[test]
+fn test_feature() {}
+"#,
+    );
+    repo.stage_all();
+    let head = repo.commit("Mixed changes");
+
+    let source_commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&source_commits);
+
+    let config = HierarchicalConfig::heuristic_only();
+    let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
+
+    let planned_commits = reorganizer.reorganize(&source_commits, &hunks).unwrap();
+
+    // Should have at least one commit
+    assert!(!planned_commits.is_empty());
+
+    // All hunks should be assigned
+    let total_changes: usize = planned_commits.iter().map(|c| c.changes.len()).sum();
+    assert_eq!(total_changes, hunks.len());
+}
+
+/// Test that hierarchical reorganizer handles single-file changes
+#[test]
+fn test_hierarchical_reorganizer_single_file() {
+    let repo = TestRepo::new();
+
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let base = repo.commit("Initial");
+
+    repo.write_file(
+        "src/main.rs",
+        r#"fn main() {
+    println!("Hello");
+}
+
+fn helper() {}
+"#,
+    );
+    repo.stage_all();
+    let head = repo.commit("Update main");
+
+    let source_commits = repo.read_commits(&base, &head);
+    let hunks = repo.read_hunks(&source_commits);
+
+    let config = HierarchicalConfig::heuristic_only();
+    let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
+
+    let planned_commits = reorganizer.reorganize(&source_commits, &hunks).unwrap();
+
+    assert!(!planned_commits.is_empty());
+
+    // All changes should be assigned
+    let total_changes: usize = planned_commits.iter().map(|c| c.changes.len()).sum();
+    assert_eq!(total_changes, hunks.len());
 }

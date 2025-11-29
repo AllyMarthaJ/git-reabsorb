@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use crate::cli::StrategyArg;
 use crate::reorganize::llm::ClaudeCliClient;
-use crate::reorganize::{GroupByFile, LlmReorganizer, PreserveOriginal, Reorganizer, Squash};
+use crate::reorganize::{
+    GroupByFile, HierarchicalReorganizer, LlmReorganizer, PreserveOriginal, Reorganizer, Squash,
+};
 
 /// Factory object responsible for instantiating reorganizers selected by the CLI.
 #[derive(Clone, Copy, Default)]
@@ -17,6 +21,10 @@ impl StrategyFactory {
             StrategyArg::ByFile => Box::new(GroupByFile),
             StrategyArg::Squash => Box::new(Squash),
             StrategyArg::Llm => Box::new(LlmReorganizer::new(Box::new(ClaudeCliClient::new()))),
+            StrategyArg::Hierarchical => {
+                let client = Arc::new(ClaudeCliClient::new());
+                Box::new(HierarchicalReorganizer::new(Some(client)))
+            }
         }
     }
 }
