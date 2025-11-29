@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::models::HunkId;
 
 /// Category of a code change
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeCategory {
     Feature,
@@ -18,13 +18,8 @@ pub enum ChangeCategory {
     Dependency,
     Formatting,
     /// Fallback for unrecognized categories
+    #[default]
     Other,
-}
-
-impl Default for ChangeCategory {
-    fn default() -> Self {
-        Self::Other
-    }
 }
 
 impl std::fmt::Display for ChangeCategory {
