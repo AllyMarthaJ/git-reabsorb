@@ -3,49 +3,23 @@
 use std::collections::HashSet;
 
 use crate::models::Hunk;
+use crate::utils::{extract_json_str, truncate};
 
 use super::types::{ChangeSpec, LlmError, LlmPlan};
 
 pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
-    let json_str = if let Some(start) = response.find("```json") {
-        let content_start = start + 7;
-        let end = response[content_start..]
-            .find("```")
-            .map(|e| content_start + e)
-            .unwrap_or(response.len());
-        &response[content_start..end]
-    } else if let Some(start) = response.find("```") {
-        let content_start = start + 3;
-        // Skip any language identifier on the same line
-        let content_start = response[content_start..]
-            .find('\n')
-            .map(|n| content_start + n + 1)
-            .unwrap_or(content_start);
-        let end = response[content_start..]
-            .find("```")
-            .map(|e| content_start + e)
-            .unwrap_or(response.len());
-        &response[content_start..end]
-    } else if let Some(start) = response.find('{') {
-        // Try to find raw JSON starting with {
-        let end = response.rfind('}').map(|e| e + 1).unwrap_or(response.len());
-        &response[start..end]
-    } else {
-        response
+    let json_str = match extract_json_str(response) {
+        Some(json) => json.trim(),
+        None => {
+            return Err(LlmError::ParseError(format!(
+                "No JSON found in response. Response content: {}",
+                truncate(response, 200)
+            )));
+        }
     };
-
-    let json_str = json_str.trim();
 
     serde_json::from_str(json_str)
         .map_err(|e| LlmError::ParseError(format!("{}: {}", e, truncate(json_str, 200))))
-}
-
-fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() > max_len {
-        &s[..max_len]
-    } else {
-        s
-    }
 }
 
 pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {

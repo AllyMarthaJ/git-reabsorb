@@ -31,7 +31,11 @@ impl HunkAnalyzer {
     }
 
     /// Analyze all hunks in parallel
-    pub fn analyze(&self, hunks: &[Hunk]) -> Result<AnalysisResults, HierarchicalError> {
+    pub fn analyze(
+        &self,
+        hunks: &[Hunk],
+        source_commits: &[SourceCommit],
+    ) -> Result<AnalysisResults, HierarchicalError> {
         if hunks.is_empty() {
             return Ok(AnalysisResults::new());
         }
@@ -51,7 +55,7 @@ impl HunkAnalyzer {
                     let errors = Arc::clone(&errors);
                     let hunk_id = hunk.id;
                     let file_path = hunk.file_path.to_string_lossy().to_string();
-                    let prompt = build_analysis_prompt(hunk);
+                    let prompt = build_analysis_prompt(hunk, source_commits);
 
                     thread::spawn(move || {
                         match analyze_single_hunk(&client, hunk_id, &file_path, &prompt) {
@@ -85,8 +89,12 @@ impl HunkAnalyzer {
     }
 
     /// Analyze a single hunk (for testing or sequential processing)
-    pub fn analyze_one(&self, hunk: &Hunk) -> Result<HunkAnalysis, HierarchicalError> {
-        let prompt = build_analysis_prompt(hunk);
+    pub fn analyze_one(
+        &self,
+        hunk: &Hunk,
+        source_commits: &[SourceCommit],
+    ) -> Result<HunkAnalysis, HierarchicalError> {
+        let prompt = build_analysis_prompt(hunk, source_commits);
         let file_path = hunk.file_path.to_string_lossy().to_string();
         analyze_single_hunk(&self.client, hunk.id, &file_path, &prompt)
             .map_err(|e| HierarchicalError::AnalysisFailed(hunk.id.0, e))
@@ -99,33 +107,75 @@ fn analyze_single_hunk(
     file_path: &str,
     prompt: &str,
 ) -> Result<HunkAnalysis, String> {
-    let response = client
-        .complete(prompt)
-        .map_err(|e| format!("LLM error: {}", e))?;
+    const MAX_RETRIES: u32 = 3;
+    let mut last_error = String::new();
 
-    let parsed: HunkAnalysisResponse =
-        parse_analysis_response(&response).map_err(|e| format!("Parse error: {}", e))?;
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            eprintln!(
+                "  Retrying hunk {} (attempt {}/{}): {}",
+                hunk_id.0,
+                attempt + 1,
+                MAX_RETRIES,
+                last_error
+            );
+            // Exponential backoff: 100ms, 200ms, 400ms
+            std::thread::sleep(std::time::Duration::from_millis(100 * (1 << attempt)));
+        }
 
-    Ok(HunkAnalysis {
-        hunk_id: hunk_id.0,
-        category: parsed.category,
-        semantic_units: parsed.semantic_units,
-        topic: normalize_topic(&parsed.suggested_topic),
-        depends_on_context: parsed.depends_on_context,
-        file_path: file_path.to_string(),
-    })
+        let response = match client.complete(prompt) {
+            Ok(r) => r,
+            Err(e) => {
+                last_error = format!("LLM error: {}", e);
+                continue;
+            }
+        };
+
+        let parsed: HunkAnalysisResponse = match parse_analysis_response(&response) {
+            Ok(p) => p,
+            Err(e) => {
+                last_error = format!("Parse error: {}", e);
+                continue;
+            }
+        };
+
+        // Successfully parsed - return the result
+        return Ok(HunkAnalysis {
+            hunk_id: hunk_id.0,
+            category: parsed.category,
+            semantic_units: parsed.semantic_units,
+            topic: normalize_topic(&parsed.suggested_topic),
+            depends_on_context: parsed.depends_on_context,
+            file_path: file_path.to_string(),
+        });
+    }
+
+    // All retries exhausted
+    Err(last_error)
 }
 
-fn build_analysis_prompt(hunk: &Hunk) -> String {
+fn build_analysis_prompt(hunk: &Hunk, source_commits: &[SourceCommit]) -> String {
     let diff_content = format_diff_lines(&hunk.lines);
     let file_path = hunk.file_path.to_string_lossy();
+
+    // Look up the original commit message to provide context about WHY this change was made
+    let commit_context = hunk
+        .likely_source_commits
+        .first()
+        .and_then(|sha| {
+            source_commits
+                .iter()
+                .find(|c| c.sha.starts_with(sha) || sha.starts_with(&c.sha))
+        })
+        .map(|c| format!("\nOriginal commit: {}\n", c.message.long))
+        .unwrap_or_default();
 
     format!(
         r#"Analyze this code change and extract structured metadata.
 
 File: {}
 Location: lines {}-{}
-
+{}
 ```diff
 {}
 ```

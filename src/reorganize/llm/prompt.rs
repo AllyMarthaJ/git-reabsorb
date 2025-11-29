@@ -1,6 +1,7 @@
 //! Prompt construction for LLM reorganization
 
-use crate::models::{DiffLine, Hunk, SourceCommit};
+use crate::models::{Hunk, SourceCommit};
+use crate::utils::format_diff_lines;
 
 use super::types::{CommitContext, HunkContext, LlmContext};
 
@@ -29,18 +30,6 @@ pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmCont
         source_commits: commit_contexts,
         hunks: hunk_contexts,
     }
-}
-
-fn format_diff_lines(lines: &[DiffLine]) -> String {
-    lines
-        .iter()
-        .map(|line| match line {
-            DiffLine::Context(s) => format!(" {}", s),
-            DiffLine::Added(s) => format!("+{}", s),
-            DiffLine::Removed(s) => format!("-{}", s),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 pub fn build_prompt(context: &LlmContext) -> String {
@@ -115,7 +104,18 @@ Each change in a commit can be one of:
     for hunk in &context.hunks {
         prompt.push_str(&format!("### Hunk {} - {}\n", hunk.id, hunk.file_path));
         if let Some(ref sha) = hunk.source_commit_sha {
-            prompt.push_str(&format!("From commit: {}\n", &sha[..8.min(sha.len())]));
+            // Look up the commit message to provide context on WHY this change was made
+            let commit_msg = context
+                .source_commits
+                .iter()
+                .find(|c| c.sha.starts_with(sha) || sha.starts_with(&c.sha))
+                .map(|c| c.message.as_str())
+                .unwrap_or("(unknown)");
+            prompt.push_str(&format!(
+                "Original commit: {} - {}\n",
+                &sha[..8.min(sha.len())],
+                commit_msg.lines().next().unwrap_or("(no message)")
+            ));
         }
         prompt.push_str(&format!(
             "Lines: old @{}, new @{}\n```diff\n{}\n```\n\n",
@@ -161,19 +161,5 @@ mod tests {
         assert_eq!(context.hunks.len(), 1);
         assert_eq!(context.hunks[0].id, 0);
         assert!(context.hunks[0].diff_content.contains("+    println!"));
-    }
-
-    #[test]
-    fn test_format_diff_lines() {
-        let lines = vec![
-            DiffLine::Context("context".to_string()),
-            DiffLine::Added("added".to_string()),
-            DiffLine::Removed("removed".to_string()),
-        ];
-
-        let formatted = format_diff_lines(&lines);
-        assert!(formatted.contains(" context"));
-        assert!(formatted.contains("+added"));
-        assert!(formatted.contains("-removed"));
     }
 }
