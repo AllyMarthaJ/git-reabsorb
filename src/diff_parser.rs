@@ -83,6 +83,8 @@ pub fn parse_diff(
                 new_start,
                 new_count,
                 lines: Vec::new(),
+                old_missing_newline_at_eof: false,
+                new_missing_newline_at_eof: false,
             });
             hunk_id += 1;
             continue;
@@ -97,7 +99,18 @@ pub fn parse_diff(
             } else if let Some(content) = line.strip_prefix(' ') {
                 builder.lines.push(DiffLine::Context(content.to_string()));
             } else if line == "\\ No newline at end of file" {
-                // Skip this marker
+                // Determine which side is missing the newline based on the last line type
+                if let Some(last_line) = builder.lines.last() {
+                    match last_line {
+                        DiffLine::Removed(_) => builder.old_missing_newline_at_eof = true,
+                        DiffLine::Added(_) => builder.new_missing_newline_at_eof = true,
+                        DiffLine::Context(_) => {
+                            // Context lines exist in both old and new
+                            builder.old_missing_newline_at_eof = true;
+                            builder.new_missing_newline_at_eof = true;
+                        }
+                    }
+                }
             } else if line.is_empty() {
                 // Empty context line
                 builder.lines.push(DiffLine::Context(String::new()));
@@ -172,6 +185,8 @@ struct HunkBuilder {
     new_start: u32,
     new_count: u32,
     lines: Vec<DiffLine>,
+    old_missing_newline_at_eof: bool,
+    new_missing_newline_at_eof: bool,
 }
 
 impl HunkBuilder {
@@ -185,6 +200,8 @@ impl HunkBuilder {
             new_count: self.new_count,
             lines: self.lines,
             likely_source_commits: likely_source_commits.to_vec(),
+            old_missing_newline_at_eof: self.old_missing_newline_at_eof,
+            new_missing_newline_at_eof: self.new_missing_newline_at_eof,
         }
     }
 }

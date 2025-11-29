@@ -67,6 +67,32 @@ pub struct Hunk {
     /// Determined by matching file paths and analyzing which commits
     /// touched the same regions of the file.
     pub likely_source_commits: Vec<String>,
+    /// True if the old file is missing a newline at EOF
+    #[serde(default)]
+    pub old_missing_newline_at_eof: bool,
+    /// True if the new file is missing a newline at EOF
+    #[serde(default)]
+    pub new_missing_newline_at_eof: bool,
+}
+
+mod path_serde {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&path.to_string_lossy())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(PathBuf::from(s))
+    }
 }
 
 impl Hunk {
@@ -81,23 +107,46 @@ impl Hunk {
             self.old_start, self.old_count, self.new_start, self.new_count
         ));
 
+        // Find the positions of the last Removed/Context and last Added/Context lines
+        // These are the lines that touch EOF for old and new files respectively
+        let last_old_line_idx = self.lines.iter().rposition(|line| {
+            matches!(line, DiffLine::Removed(_) | DiffLine::Context(_))
+        });
+        let last_new_line_idx = self.lines.iter().rposition(|line| {
+            matches!(line, DiffLine::Added(_) | DiffLine::Context(_))
+        });
+
         // Diff lines
-        for line in &self.lines {
+        for (idx, line) in self.lines.iter().enumerate() {
             match line {
                 DiffLine::Context(s) => {
                     patch.push(' ');
                     patch.push_str(s);
                     patch.push('\n');
-                }
-                DiffLine::Added(s) => {
-                    patch.push('+');
-                    patch.push_str(s);
-                    patch.push('\n');
+                    // Emit marker after last context line if either side is missing newline
+                    if Some(idx) == last_old_line_idx && Some(idx) == last_new_line_idx {
+                        if self.old_missing_newline_at_eof || self.new_missing_newline_at_eof {
+                            patch.push_str("\\ No newline at end of file\n");
+                        }
+                    }
                 }
                 DiffLine::Removed(s) => {
                     patch.push('-');
                     patch.push_str(s);
                     patch.push('\n');
+                    // Emit marker after last removed line if old file is missing newline
+                    if Some(idx) == last_old_line_idx && self.old_missing_newline_at_eof {
+                        patch.push_str("\\ No newline at end of file\n");
+                    }
+                }
+                DiffLine::Added(s) => {
+                    patch.push('+');
+                    patch.push_str(s);
+                    patch.push('\n');
+                    // Emit marker after last added line if new file is missing newline
+                    if Some(idx) == last_new_line_idx && self.new_missing_newline_at_eof {
+                        patch.push_str("\\ No newline at end of file\n");
+                    }
                 }
             }
         }
@@ -111,8 +160,21 @@ impl Hunk {
         let path_str = self.file_path.to_string_lossy();
         let mut patch = String::new();
 
-        patch.push_str(&format!("--- a/{}\n", path_str));
-        patch.push_str(&format!("+++ b/{}\n", path_str));
+        // Handle file deletions (new_count == 0) and new files (old_count == 0)
+        let old_path = if self.old_count == 0 {
+            "/dev/null".to_string()
+        } else {
+            format!("a/{}", path_str)
+        };
+
+        let new_path = if self.new_count == 0 {
+            "/dev/null".to_string()
+        } else {
+            format!("b/{}", path_str)
+        };
+
+        patch.push_str(&format!("--- {}\n", old_path));
+        patch.push_str(&format!("+++ {}\n", new_path));
         patch.push_str(&self.to_patch());
 
         patch
@@ -217,6 +279,8 @@ mod tests {
                 DiffLine::Context("}".to_string()),
             ],
             likely_source_commits: vec!["abc123".to_string()],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
         }
     }
 
@@ -246,6 +310,58 @@ mod tests {
     }
 
     #[test]
+    fn test_hunk_to_full_patch_deleted_file() {
+        let hunk = Hunk {
+            id: HunkId(0),
+            file_path: PathBuf::from("src/old.rs"),
+            old_start: 1,
+            old_count: 3,
+            new_start: 0,
+            new_count: 0,
+            lines: vec![
+                DiffLine::Removed("fn old() {".to_string()),
+                DiffLine::Removed("    // deleted".to_string()),
+                DiffLine::Removed("}".to_string()),
+            ],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
+        };
+        let patch = hunk.to_full_patch();
+
+        // For deleted files, should use /dev/null as new path
+        assert!(patch.contains("--- a/src/old.rs"), "Patch: {}", patch);
+        assert!(patch.contains("+++ /dev/null"), "Patch: {}", patch);
+        assert!(patch.contains("@@ -1,3 +0,0 @@"));
+    }
+
+    #[test]
+    fn test_hunk_to_full_patch_new_file() {
+        let hunk = Hunk {
+            id: HunkId(0),
+            file_path: PathBuf::from("src/new.rs"),
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                DiffLine::Added("fn new() {".to_string()),
+                DiffLine::Added("    // new".to_string()),
+                DiffLine::Added("}".to_string()),
+            ],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
+        };
+        let patch = hunk.to_full_patch();
+
+        // For new files, should use /dev/null as old path
+        assert!(patch.contains("--- /dev/null"), "Patch: {}", patch);
+        assert!(patch.contains("+++ b/src/new.rs"), "Patch: {}", patch);
+        assert!(patch.contains("@@ -0,0 +1,3 @@"));
+    }
+
+    #[test]
     fn test_hunk_to_patch_with_removed_lines() {
         let hunk = Hunk {
             id: HunkId(1),
@@ -261,6 +377,8 @@ mod tests {
                 DiffLine::Context("return x + z;".to_string()),
             ],
             likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
         };
         let patch = hunk.to_patch();
 
@@ -283,6 +401,8 @@ mod tests {
                 DiffLine::Added("".to_string()),
             ],
             likely_source_commits: vec!["def456".to_string()],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
         };
         let patch = hunk.to_patch();
 
