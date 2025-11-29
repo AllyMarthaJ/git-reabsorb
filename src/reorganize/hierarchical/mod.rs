@@ -23,7 +23,6 @@
 //! - Scales to thousands of hunks (each LLM call is small and focused)
 //! - Parallelizable (analysis and planning phases run concurrently)
 //! - Incremental repair (fix individual commits without redoing everything)
-//! - Deterministic fallbacks (heuristics work when LLM is unavailable)
 //! - Debuggable (each phase produces inspectable intermediate results)
 
 mod analyzer;
@@ -33,10 +32,10 @@ mod planner;
 mod types;
 mod validator;
 
-pub use analyzer::{HeuristicAnalyzer, HunkAnalyzer};
-pub use clusterer::{ClusterConfig, Clusterer, HeuristicClusterer};
-pub use orderer::{GlobalOrderer, HeuristicOrderer};
-pub use planner::{CommitPlanner, HeuristicPlanner};
+pub use analyzer::HunkAnalyzer;
+pub use clusterer::{ClusterConfig, Clusterer};
+pub use orderer::GlobalOrderer;
+pub use planner::CommitPlanner;
 pub use types::*;
 pub use validator::{assign_orphans, to_planned_commits, Validator};
 
@@ -49,12 +48,6 @@ use crate::reorganize::{ReorganizeError, Reorganizer};
 /// Configuration for the hierarchical reorganizer
 #[derive(Debug, Clone)]
 pub struct HierarchicalConfig {
-    /// Whether to use LLM for analysis (false = heuristics only)
-    pub use_llm_analysis: bool,
-    /// Whether to use LLM for clustering refinement
-    pub use_llm_clustering: bool,
-    /// Whether to use LLM for commit message generation
-    pub use_llm_planning: bool,
     /// Maximum parallel LLM calls
     pub max_parallel: usize,
     /// Cluster configuration
@@ -64,23 +57,7 @@ pub struct HierarchicalConfig {
 impl Default for HierarchicalConfig {
     fn default() -> Self {
         Self {
-            use_llm_analysis: true,
-            use_llm_clustering: true,
-            use_llm_planning: true,
             max_parallel: 8,
-            cluster_config: ClusterConfig::default(),
-        }
-    }
-}
-
-impl HierarchicalConfig {
-    /// Create a config that uses only heuristics (no LLM)
-    pub fn heuristic_only() -> Self {
-        Self {
-            use_llm_analysis: false,
-            use_llm_clustering: false,
-            use_llm_planning: false,
-            max_parallel: 1,
             cluster_config: ClusterConfig::default(),
         }
     }
@@ -108,30 +85,20 @@ impl HierarchicalReorganizer {
     /// Run the full reorganization pipeline
     fn run_pipeline(
         &self,
-        _source_commits: &[SourceCommit],
+        source_commits: &[SourceCommit],
         hunks: &[Hunk],
     ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
+        let client = self.client.as_ref().ok_or_else(|| {
+            ReorganizeError::InvalidPlan("LLM client is required for hierarchical reorganization".to_string())
+        })?;
+
         eprintln!("Phase 1: Analyzing {} hunks...", hunks.len());
 
         // Phase 1: Analyze hunks
-        let analysis = if self.config.use_llm_analysis {
-            if let Some(ref client) = self.client {
-                let analyzer = HunkAnalyzer::new(Arc::clone(client))
-                    .with_parallelism(self.config.max_parallel);
+        let analyzer = HunkAnalyzer::new(Arc::clone(client))
+            .with_parallelism(self.config.max_parallel);
 
-                analyzer
-                    .analyze(hunks)
-                    .map_err(|e| {
-                        eprintln!("LLM analysis failed, falling back to heuristics: {}", e);
-                        e
-                    })
-                    .unwrap_or_else(|_| HeuristicAnalyzer::analyze(hunks))
-            } else {
-                HeuristicAnalyzer::analyze(hunks)
-            }
-        } else {
-            HeuristicAnalyzer::analyze(hunks)
-        };
+        let analysis = analyzer.analyze(hunks, source_commits)?;
 
         eprintln!(
             "  Found {} topics: {:?}",
@@ -142,63 +109,27 @@ impl HierarchicalReorganizer {
         eprintln!("Phase 2: Clustering hunks...");
 
         // Phase 2: Cluster hunks
-        let cluster_client = if self.config.use_llm_clustering {
-            self.client.clone()
-        } else {
-            None
-        };
+        let clusterer = Clusterer::new(Some(Arc::clone(client)))
+            .with_config(self.config.cluster_config.clone());
 
-        let clusters = if cluster_client.is_some() {
-            let clusterer =
-                Clusterer::new(cluster_client).with_config(self.config.cluster_config.clone());
-
-            clusterer
-                .cluster(hunks, &analysis)
-                .map_err(|e| {
-                    eprintln!("LLM clustering failed, falling back to heuristics: {}", e);
-                    e
-                })
-                .unwrap_or_else(|_| HeuristicClusterer::cluster(hunks, &analysis))
-        } else {
-            HeuristicClusterer::cluster(hunks, &analysis)
-        };
+        let clusters = clusterer.cluster(hunks, &analysis)?;
 
         eprintln!("  Created {} clusters", clusters.len());
 
         eprintln!("Phase 3: Planning commits...");
 
         // Phase 3: Plan commits
-        let plan_client = if self.config.use_llm_planning {
-            self.client.clone()
-        } else {
-            None
-        };
+        let planner = CommitPlanner::new(Some(Arc::clone(client)))
+            .with_parallelism(self.config.max_parallel);
 
-        let commits = if plan_client.is_some() {
-            let planner =
-                CommitPlanner::new(plan_client).with_parallelism(self.config.max_parallel);
-
-            planner
-                .plan(&clusters, hunks, &analysis)
-                .map_err(|e| {
-                    eprintln!("LLM planning failed, falling back to heuristics: {}", e);
-                    e
-                })
-                .unwrap_or_else(|_| HeuristicPlanner::plan(&clusters, &analysis))
-        } else {
-            HeuristicPlanner::plan(&clusters, &analysis)
-        };
+        let commits = planner.plan(&clusters, hunks, &analysis)?;
 
         eprintln!("  Planned {} commits", commits.len());
 
         eprintln!("Phase 4: Ordering commits...");
 
         // Phase 4: Order commits
-        let ordered = GlobalOrderer::order(commits, &analysis).unwrap_or_else(|e| {
-            eprintln!("Ordering failed ({}), using heuristic order", e);
-            // Recover: use heuristic ordering on the original commits
-            HeuristicOrderer::order(HeuristicPlanner::plan(&clusters, &analysis), &analysis)
-        });
+        let ordered = GlobalOrderer::order(commits, &analysis)?;
 
         eprintln!("Phase 5: Validating and repairing...");
 
@@ -251,67 +182,8 @@ impl Reorganizer for HierarchicalReorganizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{DiffLine, HunkId};
-    use std::path::PathBuf;
-
-    fn make_test_hunk(id: usize, file: &str, lines: Vec<DiffLine>) -> Hunk {
-        Hunk {
-            id: HunkId(id),
-            file_path: PathBuf::from(file),
-            old_start: 1,
-            old_count: 3,
-            new_start: 1,
-            new_count: 4,
-            lines,
-            likely_source_commits: vec!["abc123".to_string()],
-        }
-    }
-
-    fn make_source_commit(sha: &str, message: &str) -> SourceCommit {
-        SourceCommit {
-            sha: sha.to_string(),
-            short_description: message.to_string(),
-            long_description: message.to_string(),
-        }
-    }
-
-    #[test]
-    fn test_heuristic_only_reorganization() {
-        let hunks = vec![
-            make_test_hunk(
-                0,
-                "src/auth/login.rs",
-                vec![DiffLine::Added("pub fn login() {}".to_string())],
-            ),
-            make_test_hunk(
-                1,
-                "src/auth/logout.rs",
-                vec![DiffLine::Added("pub fn logout() {}".to_string())],
-            ),
-            make_test_hunk(
-                2,
-                "tests/auth_test.rs",
-                vec![DiffLine::Added("#[test] fn test_auth() {}".to_string())],
-            ),
-        ];
-
-        let source_commits = vec![make_source_commit("abc123", "Initial implementation")];
-
-        let config = HierarchicalConfig::heuristic_only();
-        let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
-
-        let result = reorganizer.reorganize(&source_commits, &hunks);
-
-        assert!(result.is_ok());
-        let commits = result.unwrap();
-
-        // Should have at least one commit
-        assert!(!commits.is_empty());
-
-        // All hunks should be assigned
-        let total_hunks: usize = commits.iter().map(|c| c.changes.len()).sum();
-        assert_eq!(total_hunks, 3);
-    }
+    use crate::models::DiffLine;
+    use crate::test_utils::{make_hunk_full, make_source_commit};
 
     #[test]
     fn test_empty_hunks() {
@@ -322,59 +194,20 @@ mod tests {
     }
 
     #[test]
-    fn test_single_hunk() {
-        let hunks = vec![make_test_hunk(
+    fn test_requires_llm_client() {
+        let hunks = vec![make_hunk_full(
             0,
             "src/main.rs",
             vec![DiffLine::Added("fn main() {}".to_string())],
+            vec!["abc123".to_string()],
         )];
 
         let source_commits = vec![make_source_commit("abc123", "Add main")];
 
-        let config = HierarchicalConfig::heuristic_only();
-        let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
-
+        let reorganizer = HierarchicalReorganizer::new(None);
         let result = reorganizer.reorganize(&source_commits, &hunks);
 
-        assert!(result.is_ok());
-        let commits = result.unwrap();
-        assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].changes.len(), 1);
-    }
-
-    #[test]
-    fn test_multi_file_same_topic() {
-        // Changes across multiple files that should be grouped together
-        let hunks = vec![
-            make_test_hunk(
-                0,
-                "src/api/users.rs",
-                vec![DiffLine::Added("pub fn get_user() {}".to_string())],
-            ),
-            make_test_hunk(
-                1,
-                "src/api/users.rs",
-                vec![DiffLine::Added("pub fn create_user() {}".to_string())],
-            ),
-            make_test_hunk(
-                2,
-                "src/api/routes.rs",
-                vec![DiffLine::Added("route(\"/users\")".to_string())],
-            ),
-        ];
-
-        let source_commits = vec![make_source_commit("abc123", "Add user API")];
-
-        let config = HierarchicalConfig::heuristic_only();
-        let reorganizer = HierarchicalReorganizer::new(None).with_config(config);
-
-        let result = reorganizer.reorganize(&source_commits, &hunks);
-
-        assert!(result.is_ok());
-        let commits = result.unwrap();
-
-        // All hunks should be in commits
-        let total_hunks: usize = commits.iter().map(|c| c.changes.len()).sum();
-        assert_eq!(total_hunks, 3);
+        // Should error without an LLM client
+        assert!(matches!(result, Err(ReorganizeError::InvalidPlan(_))));
     }
 }

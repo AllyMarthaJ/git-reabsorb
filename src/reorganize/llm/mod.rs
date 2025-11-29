@@ -76,7 +76,8 @@ impl LlmReorganizer {
                 let changes = llm_commit
                     .changes
                     .into_iter()
-                    .map(|spec| match spec {
+                    .map(|spec| -> Result<PlannedChange, ReorganizeError> {
+                        match spec {
                         ChangeSpec::Hunk { id } => Ok(PlannedChange::ExistingHunk(HunkId(id))),
                         ChangeSpec::Partial { hunk_id, lines } => {
                             let source =
