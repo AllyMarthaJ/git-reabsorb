@@ -1483,7 +1483,6 @@ fn test_saved_plan_creation_and_roundtrip() {
         head.clone(),
         &planned,
         &hunks,
-        &[],
         &HashMap::new(),
         &HashMap::new(),
     );
@@ -1534,7 +1533,6 @@ fn test_save_and_load_plan() {
         head.clone(),
         &planned,
         &hunks,
-        &[],
         &HashMap::new(),
         &HashMap::new(),
     );
@@ -1595,7 +1593,6 @@ fn test_plan_progress_tracking() {
         head,
         &planned,
         &hunks,
-        &[],
         &HashMap::new(),
         &HashMap::new(),
     );
@@ -1658,7 +1655,6 @@ fn test_plan_with_new_hunks() {
         head.clone(),
         &planned,
         &hunks,
-        &[new_hunk],
         &HashMap::new(),
         &HashMap::new(),
     );
@@ -1667,14 +1663,16 @@ fn test_plan_with_new_hunks() {
     save_plan(&namespace, &plan).unwrap();
     let loaded = load_plan(&namespace).unwrap();
 
-    // Verify new hunks are preserved
-    assert_eq!(loaded.new_hunks.len(), 1);
-    assert_eq!(loaded.new_hunks[0].id, 100);
-
-    // Roundtrip should work
+    // Roundtrip should work - new hunks are now embedded in PlannedChange::NewHunk
     let restored = loaded.to_planned_commits();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].changes.len(), 2);
+
+    // Verify the new hunk is preserved inline
+    match &restored[0].changes[1] {
+        PlannedChange::NewHunk(h) => assert_eq!(h.id, HunkId(100)),
+        _ => panic!("Expected NewHunk"),
+    }
 
     // Clean up
     delete_plan(&namespace).unwrap();
@@ -1717,7 +1715,6 @@ fn test_plan_stores_file_mappings() {
         head.clone(),
         &planned,
         &hunks,
-        &[],
         &file_to_commits,
         &new_files_to_commits,
     );
