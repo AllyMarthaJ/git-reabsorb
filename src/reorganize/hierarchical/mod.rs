@@ -89,14 +89,16 @@ impl HierarchicalReorganizer {
         hunks: &[Hunk],
     ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
         let client = self.client.as_ref().ok_or_else(|| {
-            ReorganizeError::InvalidPlan("LLM client is required for hierarchical reorganization".to_string())
+            ReorganizeError::InvalidPlan(
+                "LLM client is required for hierarchical reorganization".to_string(),
+            )
         })?;
 
         eprintln!("Phase 1: Analyzing {} hunks...", hunks.len());
 
         // Phase 1: Analyze hunks
-        let analyzer = HunkAnalyzer::new(Arc::clone(client))
-            .with_parallelism(self.config.max_parallel);
+        let analyzer =
+            HunkAnalyzer::new(Arc::clone(client)).with_parallelism(self.config.max_parallel);
 
         let analysis = analyzer.analyze(hunks, source_commits)?;
 
@@ -119,8 +121,8 @@ impl HierarchicalReorganizer {
         eprintln!("Phase 3: Planning commits...");
 
         // Phase 3: Plan commits
-        let planner = CommitPlanner::new(Some(Arc::clone(client)))
-            .with_parallelism(self.config.max_parallel);
+        let planner =
+            CommitPlanner::new(Some(Arc::clone(client))).with_parallelism(self.config.max_parallel);
 
         let commits = planner.plan(&clusters, hunks, &analysis)?;
 

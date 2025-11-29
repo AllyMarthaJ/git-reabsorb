@@ -3,13 +3,11 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::models::{DiffLine, Hunk, HunkId, SourceCommit};
+use crate::models::{Hunk, HunkId, SourceCommit};
 use crate::reorganize::llm::LlmClient;
 use crate::utils::{extract_json_str, format_diff_lines};
 
-use super::types::{
-    AnalysisResults, ChangeCategory, HierarchicalError, HunkAnalysis, HunkAnalysisResponse,
-};
+use super::types::{AnalysisResults, HierarchicalError, HunkAnalysis, HunkAnalysisResponse};
 
 /// Analyzes hunks to extract semantic metadata
 pub struct HunkAnalyzer {
@@ -202,8 +200,12 @@ Guidelines:
 }
 
 fn parse_analysis_response(response: &str) -> Result<HunkAnalysisResponse, String> {
-    let json_str = extract_json_str(response)
-        .ok_or_else(|| format!("No JSON found in response: {}", &response[..200.min(response.len())]))?;
+    let json_str = extract_json_str(response).ok_or_else(|| {
+        format!(
+            "No JSON found in response: {}",
+            &response[..200.min(response.len())]
+        )
+    })?;
 
     serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {} in: {}", e, json_str))
 }
@@ -216,4 +218,3 @@ fn normalize_topic(topic: &str) -> String {
         .filter(|c| c.is_alphanumeric() || *c == '_')
         .collect()
 }
-
