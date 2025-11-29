@@ -2380,3 +2380,89 @@ fn test_diff_trees_produces_parseable_hunks_for_new_files() {
         "New file hunks should have added lines"
     );
 }
+
+#[test]
+fn test_squash_with_file_deletions() {
+    let repo = TestRepo::new();
+
+    // Create and commit some files
+    repo.write_file("keep.txt", "this stays");
+    repo.write_file("delete1.txt", "delete me");
+    repo.write_file("delete2.txt", "delete me too");
+    repo.write_file("new.txt", "will be created");  // Create then delete to ensure it exists in base
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Delete files and create a new one
+    fs::remove_file(repo.path.join("delete1.txt")).unwrap();
+    fs::remove_file(repo.path.join("delete2.txt")).unwrap();
+    fs::remove_file(repo.path.join("new.txt")).unwrap();  // Delete old version
+    repo.write_file("new.txt", "new content");  // Create with different content
+    repo.stage_all();
+    let head = repo.commit("Delete and modify files");
+
+    // Get hunks from the commit
+    let hunks = repo.git.read_hunks(&head, 0).unwrap();
+
+    eprintln!("Total hunks: {}", hunks.len());
+    for (i, hunk) in hunks.iter().enumerate() {
+        eprintln!("  Hunk {}: {} (old_count={}, new_count={}, lines={})",
+                  i, hunk.file_path.display(), hunk.old_count, hunk.new_count, hunk.lines.len());
+        for (j, line) in hunk.lines.iter().enumerate() {
+            eprintln!("    Line {}: {:?}", j, line);
+        }
+    }
+
+    // Should have hunks for the deletions
+    let delete1_hunks: Vec<_> = hunks.iter().filter(|h| h.file_path == Path::new("delete1.txt")).collect();
+    let delete2_hunks: Vec<_> = hunks.iter().filter(|h| h.file_path == Path::new("delete2.txt")).collect();
+    let new_hunks: Vec<_> = hunks.iter().filter(|h| h.file_path == Path::new("new.txt")).collect();
+
+    assert!(!delete1_hunks.is_empty(), "Should have hunk for delete1.txt");
+    assert!(!delete2_hunks.is_empty(), "Should have hunk for delete2.txt");
+    assert!(!new_hunks.is_empty(), "Should have hunk for new.txt");
+
+    // Verify deletion hunks have new_count == 0
+    let deletion_hunks: Vec<_> = hunks.iter().filter(|h| h.new_count == 0).collect();
+    assert_eq!(deletion_hunks.len(), 2, "Should have 2 deletion hunks (delete1.txt and delete2.txt)");
+
+    // Reset to base and apply all hunks
+    repo.git.reset_to(&base).unwrap();
+
+    // Check status after reset
+    eprintln!("Files after reset:");
+    for file in &["delete1.txt", "delete2.txt", "new.txt", "keep.txt"] {
+        eprintln!("  {} exists: {}", file, repo.path.join(file).exists());
+    }
+
+    // Check actual file content in index
+    let output = std::process::Command::new("git")
+        .current_dir(&repo.path)
+        .args(&["show", &format!("HEAD:delete1.txt")])
+        .output()
+        .unwrap();
+    let content = output.stdout;
+    eprintln!("delete1.txt content in HEAD: {:?} (len={}, ends with newline={})",
+              String::from_utf8_lossy(&content), content.len(), content.ends_with(b"\n"));
+
+    let hunk_refs: Vec<&git_reabsorb::models::Hunk> = hunks.iter().collect();
+    repo.git.apply_hunks_to_index(&hunk_refs).unwrap();
+    repo.git.commit("Squashed", false).unwrap();
+
+    // Verify the deletions were applied
+    assert!(!repo.path.join("delete1.txt").exists(), "delete1.txt should be deleted");
+    assert!(!repo.path.join("delete2.txt").exists(), "delete2.txt should be deleted");
+    assert!(repo.path.join("new.txt").exists(), "new.txt should exist");
+    assert!(repo.path.join("keep.txt").exists(), "keep.txt should still exist");
+
+    // Verify git status is clean
+    let status_output = String::from_utf8(
+        Command::new("git")
+            .current_dir(&repo.path)
+            .args(&["status", "--porcelain"])
+            .output()
+            .unwrap()
+            .stdout
+    ).unwrap();
+    assert_eq!(status_output, "", "Working tree should be clean, but got: {}", status_output);
+}

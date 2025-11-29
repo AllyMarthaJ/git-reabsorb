@@ -255,4 +255,23 @@ That's it!"#;
             );
         }
     }
+
+    #[test]
+    fn test_extract_json_no_json_found() {
+        let response = "Running node v24.8.0 (npm v11.6.0)";
+        let result = extract_json(response);
+        assert!(matches!(result, Err(LlmError::ParseError(_))));
+        if let Err(LlmError::ParseError(msg)) = result {
+            assert!(
+                msg.contains("No JSON found"),
+                "Error should mention no JSON found: {}",
+                msg
+            );
+            assert!(
+                msg.contains("Running node"),
+                "Error should include the response content: {}",
+                msg
+            );
+        }
+    }
 }
