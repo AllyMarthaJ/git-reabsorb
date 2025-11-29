@@ -55,6 +55,13 @@ impl LlmClient for ClaudeCliClient {
         }
 
         let response = String::from_utf8_lossy(&output.stdout).to_string();
+
+        // If stderr has content, include it in debug output
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            eprintln!("Claude CLI stderr: {}", stderr.trim());
+        }
+
         Ok(response)
     }
 }
