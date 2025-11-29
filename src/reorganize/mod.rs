@@ -25,6 +25,12 @@ pub enum ReorganizeError {
     InvalidPlan(String),
 }
 
+impl From<hierarchical::HierarchicalError> for ReorganizeError {
+    fn from(err: hierarchical::HierarchicalError) -> Self {
+        ReorganizeError::Failed(err.to_string())
+    }
+}
+
 /// Trait for reorganizing hunks into planned commits
 pub trait Reorganizer {
     /// Take source commits and hunks, return a plan for new commits
