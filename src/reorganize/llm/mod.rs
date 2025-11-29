@@ -96,6 +96,7 @@ impl LlmReorganizer {
                             *next_hunk_id += 1;
                             Ok(PlannedChange::NewHunk(new_hunk))
                         }
+                        }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(PlannedCommit::new(llm_commit.description, changes))
