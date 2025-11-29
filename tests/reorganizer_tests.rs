@@ -2338,7 +2338,10 @@ fn test_diff_trees_produces_parseable_hunks_for_new_files() {
         ".github/workflows/ci.yml",
         "name: CI\non: [push, pull_request]\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
     );
-    repo.write_file("src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n");
+    repo.write_file(
+        "src/lib.rs",
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+    );
     repo.stage_all();
     let head = repo.commit("Add CI and lib");
 
@@ -2363,10 +2366,7 @@ fn test_diff_trees_produces_parseable_hunks_for_new_files() {
         "Should have hunks for .github/workflows/ci.yml. All hunks: {:?}",
         hunks.iter().map(|h| &h.file_path).collect::<Vec<_>>()
     );
-    assert!(
-        !lib_hunks.is_empty(),
-        "Should have hunks for src/lib.rs"
-    );
+    assert!(!lib_hunks.is_empty(), "Should have hunks for src/lib.rs");
 
     // Verify the hunk content is correct (all additions for new files)
     let github_hunk = github_hunks[0];
