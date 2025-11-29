@@ -41,10 +41,11 @@ impl CommitPlanner {
             return Ok(Vec::new());
         }
 
-        match &self.client {
-            Some(client) => self.plan_with_llm(clusters, hunks, analysis, client),
-            None => Ok(self.plan_heuristic(clusters, hunks, analysis)),
-        }
+        let client = self.client.as_ref().ok_or_else(|| {
+            HierarchicalError::LlmError("LLM client is required for planning".to_string())
+        })?;
+
+        self.plan_with_llm(clusters, hunks, analysis, client)
     }
 
     /// Plan commits using LLM
@@ -121,28 +122,6 @@ impl CommitPlanner {
         Ok(commits)
     }
 
-    /// Plan commits using heuristics (no LLM)
-    fn plan_heuristic(
-        &self,
-        clusters: &[Cluster],
-        _hunks: &[Hunk],
-        analysis: &AnalysisResults,
-    ) -> Vec<ClusterCommit> {
-        clusters
-            .iter()
-            .map(|cluster| {
-                let (short_msg, long_msg) = generate_heuristic_message(cluster, analysis);
-
-                ClusterCommit {
-                    cluster_id: cluster.id,
-                    short_message: short_msg,
-                    long_message: long_msg,
-                    hunk_ids: cluster.hunk_ids.clone(),
-                    depends_on: Vec::new(),
-                }
-            })
-            .collect()
-    }
 }
 
 fn plan_single_cluster(
@@ -277,167 +256,3 @@ fn parse_commit_response(response: &str) -> Result<CommitPlanResponse, String> {
     serde_json::from_str(json_str).map_err(|e| format!("Failed to parse commit plan: {}", e))
 }
 
-fn generate_heuristic_message(cluster: &Cluster, analysis: &AnalysisResults) -> (String, String) {
-    // Collect semantic units from all hunks in the cluster
-    let semantic_units: Vec<&str> = cluster
-        .hunk_ids
-        .iter()
-        .filter_map(|id| analysis.get(*id))
-        .flat_map(|a| a.semantic_units.iter().map(|s| s.as_str()))
-        .collect();
-
-    // Collect unique files
-    let files: Vec<&str> = cluster
-        .hunk_ids
-        .iter()
-        .filter_map(|id| analysis.get(*id))
-        .map(|a| a.file_path.as_str())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    // Determine primary category
-    let primary_category = cluster
-        .categories
-        .iter()
-        .next()
-        .copied()
-        .unwrap_or(ChangeCategory::Other);
-
-    // Generate short message based on category and topic
-    let short_message = match primary_category {
-        ChangeCategory::Feature => format!("Add {} functionality", cluster.topic),
-        ChangeCategory::Bugfix => format!("Fix {} issue", cluster.topic),
-        ChangeCategory::Refactor => format!("Refactor {}", cluster.topic),
-        ChangeCategory::Test => format!("Add tests for {}", cluster.topic),
-        ChangeCategory::Documentation => format!("Update {} documentation", cluster.topic),
-        ChangeCategory::Configuration => format!("Update {} configuration", cluster.topic),
-        ChangeCategory::Dependency => format!("Update {} dependencies", cluster.topic),
-        ChangeCategory::Formatting => format!("Format {} code", cluster.topic),
-        ChangeCategory::Other => format!("Update {}", cluster.topic),
-    };
-
-    // Generate long message
-    let mut long_message = short_message.clone();
-    long_message.push_str("\n\n");
-
-    if !semantic_units.is_empty() {
-        long_message.push_str("Changes:\n");
-        for unit in semantic_units.iter().take(10) {
-            long_message.push_str(&format!("- {}\n", unit));
-        }
-        if semantic_units.len() > 10 {
-            long_message.push_str(&format!("- ... and {} more\n", semantic_units.len() - 10));
-        }
-    }
-
-    if files.len() > 1 {
-        long_message.push_str(&format!("\nAffected files: {}\n", files.len()));
-    }
-
-    (short_message, long_message)
-}
-
-/// Heuristic planner that doesn't use LLM
-pub struct HeuristicPlanner;
-
-impl HeuristicPlanner {
-    pub fn plan(clusters: &[Cluster], analysis: &AnalysisResults) -> Vec<ClusterCommit> {
-        clusters
-            .iter()
-            .map(|cluster| {
-                let (short_msg, long_msg) = generate_heuristic_message(cluster, analysis);
-
-                ClusterCommit {
-                    cluster_id: cluster.id,
-                    short_message: short_msg,
-                    long_message: long_msg,
-                    hunk_ids: cluster.hunk_ids.clone(),
-                    depends_on: Vec::new(),
-                }
-            })
-            .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::types::ClusterFormationReason;
-    use super::*;
-    use std::collections::HashSet;
-
-    fn make_test_cluster(id: usize, topic: &str, hunk_ids: Vec<usize>) -> Cluster {
-        Cluster {
-            id: ClusterId(id),
-            hunk_ids: hunk_ids.into_iter().map(HunkId).collect(),
-            topic: topic.to_string(),
-            categories: HashSet::from([ChangeCategory::Feature]),
-            formation_reason: ClusterFormationReason::SameTopic(topic.to_string()),
-        }
-    }
-
-    #[test]
-    fn test_heuristic_message_feature() {
-        let cluster = make_test_cluster(0, "authentication", vec![0, 1]);
-
-        let mut analysis = AnalysisResults::new();
-        analysis.add(super::super::types::HunkAnalysis {
-            hunk_id: 0,
-            category: ChangeCategory::Feature,
-            semantic_units: vec!["add login function".to_string()],
-            topic: "authentication".to_string(),
-            depends_on_context: None,
-            file_path: "src/auth.rs".to_string(),
-        });
-        analysis.add(super::super::types::HunkAnalysis {
-            hunk_id: 1,
-            category: ChangeCategory::Feature,
-            semantic_units: vec!["add logout function".to_string()],
-            topic: "authentication".to_string(),
-            depends_on_context: None,
-            file_path: "src/auth.rs".to_string(),
-        });
-
-        let (short, long) = generate_heuristic_message(&cluster, &analysis);
-
-        assert!(short.contains("authentication"));
-        assert!(long.contains("login"));
-        assert!(long.contains("logout"));
-    }
-
-    #[test]
-    fn test_heuristic_message_bugfix() {
-        let mut cluster = make_test_cluster(0, "validation", vec![0]);
-        cluster.categories = HashSet::from([ChangeCategory::Bugfix]);
-
-        let mut analysis = AnalysisResults::new();
-        analysis.add(super::super::types::HunkAnalysis {
-            hunk_id: 0,
-            category: ChangeCategory::Bugfix,
-            semantic_units: vec!["fix null check".to_string()],
-            topic: "validation".to_string(),
-            depends_on_context: None,
-            file_path: "src/validate.rs".to_string(),
-        });
-
-        let (short, _) = generate_heuristic_message(&cluster, &analysis);
-
-        assert!(short.contains("Fix"));
-    }
-
-    #[test]
-    fn test_heuristic_planner() {
-        let clusters = vec![
-            make_test_cluster(0, "auth", vec![0, 1]),
-            make_test_cluster(1, "api", vec![2]),
-        ];
-
-        let analysis = AnalysisResults::new();
-
-        let commits = HeuristicPlanner::plan(&clusters, &analysis);
-
-        assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].cluster_id.0, 0);
-        assert_eq!(commits[1].cluster_id.0, 1);
-    }
-}

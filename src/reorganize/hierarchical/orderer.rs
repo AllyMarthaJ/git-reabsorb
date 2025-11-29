@@ -225,60 +225,82 @@ impl DependencyGraph {
 
         Ok(result)
     }
-}
 
-/// Heuristic orderer that doesn't use complex dependency analysis
-pub struct HeuristicOrderer;
+    /// Find nodes involved in a cycle
+    fn find_cycle_nodes(&self) -> HashSet<ClusterId> {
+        let mut visited = HashSet::new();
+        let mut rec_stack = HashSet::new();
+        let mut cycle_nodes = HashSet::new();
 
-impl HeuristicOrderer {
-    pub fn order(
-        mut commits: Vec<ClusterCommit>,
-        analysis: &AnalysisResults,
-    ) -> Vec<ClusterCommit> {
-        // Simple ordering: by category priority, then by cluster ID
+        for &node in &self.nodes {
+            if !visited.contains(&node) {
+                self.dfs_find_cycle(node, &mut visited, &mut rec_stack, &mut cycle_nodes);
+            }
+        }
 
-        let category_priority = |commit: &ClusterCommit| -> u8 {
-            let categories: HashSet<ChangeCategory> = commit
-                .hunk_ids
-                .iter()
-                .filter_map(|id| analysis.get(*id))
-                .map(|a| a.category)
-                .collect();
+        cycle_nodes
+    }
 
-            // Lower is higher priority (comes first)
-            if categories.contains(&ChangeCategory::Dependency) {
-                return 0;
-            }
-            if categories.contains(&ChangeCategory::Configuration) {
-                return 1;
-            }
-            if categories.contains(&ChangeCategory::Refactor) {
-                return 2;
-            }
-            if categories.contains(&ChangeCategory::Feature) {
-                return 3;
-            }
-            if categories.contains(&ChangeCategory::Bugfix) {
-                return 4;
-            }
-            if categories.contains(&ChangeCategory::Test) {
-                return 5;
-            }
-            if categories.contains(&ChangeCategory::Documentation) {
-                return 6;
-            }
-            7
-        };
+    fn dfs_find_cycle(
+        &self,
+        node: ClusterId,
+        visited: &mut HashSet<ClusterId>,
+        rec_stack: &mut HashSet<ClusterId>,
+        cycle_nodes: &mut HashSet<ClusterId>,
+    ) -> bool {
+        visited.insert(node);
+        rec_stack.insert(node);
 
-        commits.sort_by(|a, b| {
-            let priority_a = category_priority(a);
-            let priority_b = category_priority(b);
-            priority_a
-                .cmp(&priority_b)
-                .then_with(|| a.cluster_id.0.cmp(&b.cluster_id.0))
-        });
+        if let Some(neighbors) = self.edges.get(&node) {
+            for &neighbor in neighbors {
+                if !visited.contains(&neighbor) {
+                    if self.dfs_find_cycle(neighbor, visited, rec_stack, cycle_nodes) {
+                        cycle_nodes.insert(node);
+                        return true;
+                    }
+                } else if rec_stack.contains(&neighbor) {
+                    // Found a cycle
+                    cycle_nodes.insert(node);
+                    cycle_nodes.insert(neighbor);
+                    return true;
+                }
+            }
+        }
 
-        commits
+        rec_stack.remove(&node);
+        false
+    }
+
+    /// Remove all edges involving nodes in the cycle
+    fn break_cycles(&mut self) -> bool {
+        let cycle_nodes = self.find_cycle_nodes();
+
+        if cycle_nodes.is_empty() {
+            return false;
+        }
+
+        let mut edges_removed = false;
+
+        // Remove edges between cycle nodes
+        for &from_node in &cycle_nodes {
+            if let Some(neighbors) = self.edges.get_mut(&from_node) {
+                let to_remove: Vec<ClusterId> = neighbors
+                    .iter()
+                    .filter(|&&to| cycle_nodes.contains(&to))
+                    .copied()
+                    .collect();
+
+                for to_node in to_remove {
+                    neighbors.remove(&to_node);
+                    if let Some(rev) = self.reverse_edges.get_mut(&to_node) {
+                        rev.remove(&from_node);
+                    }
+                    edges_removed = true;
+                }
+            }
+        }
+
+        edges_removed
     }
 }
 
