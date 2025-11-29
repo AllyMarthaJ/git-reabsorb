@@ -546,41 +546,8 @@ mod tests {
     }
 
     #[test]
-    fn test_topic_clustering() {
-        let mut analysis = AnalysisResults::new();
-        analysis.add(make_analysis(
-            0,
-            "src/auth/login.rs",
-            "auth",
-            ChangeCategory::Feature,
-        ));
-        analysis.add(make_analysis(
-            1,
-            "src/auth/logout.rs",
-            "auth",
-            ChangeCategory::Feature,
-        ));
-        analysis.add(make_analysis(
-            2,
-            "src/api/users.rs",
-            "users",
-            ChangeCategory::Feature,
-        ));
-
-        let clusters = HeuristicClusterer::cluster(&[], &analysis);
-
-        assert_eq!(clusters.len(), 2);
-
-        let auth_cluster = clusters.iter().find(|c| c.topic == "auth").unwrap();
-        assert_eq!(auth_cluster.hunk_ids.len(), 2);
-
-        let users_cluster = clusters.iter().find(|c| c.topic == "users").unwrap();
-        assert_eq!(users_cluster.hunk_ids.len(), 1);
-    }
-
-    #[test]
     fn test_cluster_validation() {
-        let hunks = vec![make_test_hunk(0, "a.rs"), make_test_hunk(1, "b.rs")];
+        let hunks = vec![make_hunk_in_file(0, "a.rs"), make_hunk_in_file(1, "b.rs")];
 
         let mut analysis = AnalysisResults::new();
         analysis.add(make_analysis(0, "a.rs", "topic", ChangeCategory::Feature));

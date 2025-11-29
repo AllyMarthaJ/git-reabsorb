@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::models::{CommitDescription, Hunk, HunkId, PlannedCommit, SourceCommit};
+use crate::models::{Hunk, HunkId, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
 /// Preserves the original commit structure.
