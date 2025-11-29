@@ -37,7 +37,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         &self,
         hunks: &[Hunk],
         planned_commits: &[PlannedCommit],
-        new_files_to_commits: &HashMap<String, Vec<String>>,
+        _new_files_to_commits: &HashMap<String, Vec<String>>,
         no_verify: bool,
         no_editor: bool,
         plan: &mut SavedPlan,
@@ -143,15 +143,6 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
 
         Ok(())
     }
-}
-
-fn collect_source_commits(planned: &PlannedCommit, hunks: &[Hunk]) -> HashSet<String> {
-    planned
-        .changes
-        .iter()
-        .filter_map(|c| c.resolve(hunks))
-        .flat_map(|h| h.likely_source_commits.clone())
-        .collect()
 }
 
 fn generate_commit_help(hunks: &[&Hunk], new_files: &[&std::path::PathBuf]) -> String {

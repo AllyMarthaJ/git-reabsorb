@@ -77,9 +77,9 @@ pub struct Hunk {
 
 mod path_serde {
     use serde::{self, Deserialize, Deserializer, Serializer};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -109,12 +109,14 @@ impl Hunk {
 
         // Find the positions of the last Removed/Context and last Added/Context lines
         // These are the lines that touch EOF for old and new files respectively
-        let last_old_line_idx = self.lines.iter().rposition(|line| {
-            matches!(line, DiffLine::Removed(_) | DiffLine::Context(_))
-        });
-        let last_new_line_idx = self.lines.iter().rposition(|line| {
-            matches!(line, DiffLine::Added(_) | DiffLine::Context(_))
-        });
+        let last_old_line_idx = self
+            .lines
+            .iter()
+            .rposition(|line| matches!(line, DiffLine::Removed(_) | DiffLine::Context(_)));
+        let last_new_line_idx = self
+            .lines
+            .iter()
+            .rposition(|line| matches!(line, DiffLine::Added(_) | DiffLine::Context(_)));
 
         // Diff lines
         for (idx, line) in self.lines.iter().enumerate() {
@@ -124,10 +126,11 @@ impl Hunk {
                     patch.push_str(s);
                     patch.push('\n');
                     // Emit marker after last context line if either side is missing newline
-                    if Some(idx) == last_old_line_idx && Some(idx) == last_new_line_idx {
-                        if self.old_missing_newline_at_eof || self.new_missing_newline_at_eof {
-                            patch.push_str("\\ No newline at end of file\n");
-                        }
+                    if Some(idx) == last_old_line_idx
+                        && Some(idx) == last_new_line_idx
+                        && (self.old_missing_newline_at_eof || self.new_missing_newline_at_eof)
+                    {
+                        patch.push_str("\\ No newline at end of file\n");
                     }
                 }
                 DiffLine::Removed(s) => {

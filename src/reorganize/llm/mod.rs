@@ -78,24 +78,24 @@ impl LlmReorganizer {
                     .into_iter()
                     .map(|spec| -> Result<PlannedChange, ReorganizeError> {
                         match spec {
-                        ChangeSpec::Hunk { id } => Ok(PlannedChange::ExistingHunk(HunkId(id))),
-                        ChangeSpec::Partial { hunk_id, lines } => {
-                            let source =
-                                hunks.iter().find(|h| h.id.0 == hunk_id).ok_or_else(|| {
-                                    ReorganizeError::InvalidPlan(format!(
-                                        "Hunk {} not found",
-                                        hunk_id
-                                    ))
-                                })?;
-                            let new_hunk = extract_partial_hunk(source, &lines, *next_hunk_id)?;
-                            *next_hunk_id += 1;
-                            Ok(PlannedChange::NewHunk(new_hunk))
-                        }
-                        ChangeSpec::Raw { file_path, diff } => {
-                            let new_hunk = parse_raw_diff(&file_path, &diff, *next_hunk_id)?;
-                            *next_hunk_id += 1;
-                            Ok(PlannedChange::NewHunk(new_hunk))
-                        }
+                            ChangeSpec::Hunk { id } => Ok(PlannedChange::ExistingHunk(HunkId(id))),
+                            ChangeSpec::Partial { hunk_id, lines } => {
+                                let source =
+                                    hunks.iter().find(|h| h.id.0 == hunk_id).ok_or_else(|| {
+                                        ReorganizeError::InvalidPlan(format!(
+                                            "Hunk {} not found",
+                                            hunk_id
+                                        ))
+                                    })?;
+                                let new_hunk = extract_partial_hunk(source, &lines, *next_hunk_id)?;
+                                *next_hunk_id += 1;
+                                Ok(PlannedChange::NewHunk(new_hunk))
+                            }
+                            ChangeSpec::Raw { file_path, diff } => {
+                                let new_hunk = parse_raw_diff(&file_path, &diff, *next_hunk_id)?;
+                                *next_hunk_id += 1;
+                                Ok(PlannedChange::NewHunk(new_hunk))
+                            }
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;

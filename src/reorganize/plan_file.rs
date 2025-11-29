@@ -61,8 +61,14 @@ impl SavedPlan {
             commits: planned_commits.iter().map(SavedCommit::from).collect(),
             next_commit_index: 0,
             working_tree_hunks: working_tree_hunks.to_vec(),
-            file_to_commits: file_to_commits.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            new_files_to_commits: new_files_to_commits.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            file_to_commits: file_to_commits
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            new_files_to_commits: new_files_to_commits
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 

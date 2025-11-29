@@ -7,8 +7,7 @@ use crate::models::{Hunk, HunkId};
 use crate::reorganize::llm::LlmClient;
 
 use super::types::{
-    AnalysisResults, ChangeCategory, Cluster, ClusterCommit, ClusterId, CommitPlanResponse,
-    HierarchicalError,
+    AnalysisResults, Cluster, ClusterCommit, ClusterId, CommitPlanResponse, HierarchicalError,
 };
 
 /// Plans commits from clusters
@@ -121,7 +120,6 @@ impl CommitPlanner {
 
         Ok(commits)
     }
-
 }
 
 fn plan_single_cluster(
@@ -286,4 +284,3 @@ fn parse_commit_response(response: &str) -> Result<CommitPlanResponse, String> {
 
     serde_json::from_str(json_str).map_err(|e| format!("Failed to parse commit plan: {}", e))
 }
-
