@@ -6,7 +6,9 @@ use std::process::Command;
 
 use git_reabsorb::git::{Git, GitOps};
 use git_reabsorb::models::Hunk;
-use git_reabsorb::reorganize::{GroupByFile, HierarchicalConfig, HierarchicalReorganizer, PreserveOriginal, Reorganizer, Squash};
+use git_reabsorb::reorganize::{
+    GroupByFile, HierarchicalConfig, HierarchicalReorganizer, PreserveOriginal, Reorganizer, Squash,
+};
 
 struct TestRepo {
     path: PathBuf,
@@ -2035,7 +2037,10 @@ impl Calculator {
     // For this test, we'll just verify the mechanics work
     let hunk_refs: Vec<&git_reabsorb::models::Hunk> = hunks.iter().collect();
     repo.git.apply_hunks_to_index(&hunk_refs).unwrap();
-    let new_sha = repo.git.commit("Reorganized: implement both methods", false).unwrap();
+    let new_sha = repo
+        .git
+        .commit("Reorganized: implement both methods", false)
+        .unwrap();
 
     // Verify the new commit exists and file content is correct
     assert!(!new_sha.is_empty());
@@ -2109,7 +2114,11 @@ fn test_login() {
 
     let result = reorganizer.reorganize(&source_commits, &hunks);
 
-    assert!(result.is_ok(), "Reorganization should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Reorganization should succeed: {:?}",
+        result.err()
+    );
     let planned_commits = result.unwrap();
 
     // Should have at least one commit

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::models::{Hunk, HunkId, PlannedChange, PlannedCommit, CommitDescription};
+use crate::models::{CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit};
 use crate::reorganize::llm::LlmClient;
 
 use super::types::{AnalysisResults, ClusterCommit, HierarchicalError};
@@ -63,11 +63,7 @@ impl Validator {
     }
 
     /// Validate all commits and return validation results
-    pub fn validate(
-        &self,
-        commits: &[ClusterCommit],
-        hunks: &[Hunk],
-    ) -> Vec<CommitValidation> {
+    pub fn validate(&self, commits: &[ClusterCommit], hunks: &[Hunk]) -> Vec<CommitValidation> {
         let valid_hunk_ids: HashSet<HunkId> = hunks.iter().map(|h| h.id).collect();
 
         commits
@@ -287,9 +283,7 @@ fn build_repair_prompt(
     _hunks: &[Hunk],
     analysis: &AnalysisResults,
 ) -> String {
-    let mut prompt = String::from(
-        "Write a better commit message for these changes:\n\n",
-    );
+    let mut prompt = String::from("Write a better commit message for these changes:\n\n");
 
     prompt.push_str(&format!("Current message: {}\n\n", commit.short_message));
 
@@ -387,13 +381,11 @@ pub fn assign_orphans(
             .unwrap_or("");
 
         // Find a commit with matching topic
-        let matching_commit = commits
-            .iter_mut()
-            .find(|c| {
-                c.hunk_ids
-                    .iter()
-                    .any(|id| analysis.get(*id).map(|a| a.topic.as_str()) == Some(orphan_topic))
-            });
+        let matching_commit = commits.iter_mut().find(|c| {
+            c.hunk_ids
+                .iter()
+                .any(|id| analysis.get(*id).map(|a| a.topic.as_str()) == Some(orphan_topic))
+        });
 
         if let Some(commit) = matching_commit {
             commit.hunk_ids.push(orphan_id);
@@ -420,10 +412,10 @@ pub fn assign_orphans(
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::{ChangeCategory, ClusterId, HunkAnalysis};
     use super::*;
-    use super::super::types::{ClusterId, HunkAnalysis, ChangeCategory};
-    use std::path::PathBuf;
     use crate::models::DiffLine;
+    use std::path::PathBuf;
 
     fn make_test_hunk(id: usize) -> Hunk {
         Hunk {

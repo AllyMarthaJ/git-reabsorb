@@ -86,7 +86,8 @@ impl CommitPlanner {
 
                     thread::spawn(move || {
                         let hunk_refs: Vec<&Hunk> = cluster_hunks.iter().collect();
-                        match plan_single_cluster(&client, &cluster, &hunk_refs, &cluster_analysis) {
+                        match plan_single_cluster(&client, &cluster, &hunk_refs, &cluster_analysis)
+                        {
                             Ok(commits) => {
                                 let mut results = results.lock().unwrap();
                                 results.extend(commits);
@@ -276,10 +277,7 @@ fn parse_commit_response(response: &str) -> Result<CommitPlanResponse, String> {
     serde_json::from_str(json_str).map_err(|e| format!("Failed to parse commit plan: {}", e))
 }
 
-fn generate_heuristic_message(
-    cluster: &Cluster,
-    analysis: &AnalysisResults,
-) -> (String, String) {
+fn generate_heuristic_message(cluster: &Cluster, analysis: &AnalysisResults) -> (String, String) {
     // Collect semantic units from all hunks in the cluster
     let semantic_units: Vec<&str> = cluster
         .hunk_ids
@@ -364,9 +362,9 @@ impl HeuristicPlanner {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::ClusterFormationReason;
     use super::*;
     use std::collections::HashSet;
-    use super::super::types::ClusterFormationReason;
 
     fn make_test_cluster(id: usize, topic: &str, hunk_ids: Vec<usize>) -> Cluster {
         Cluster {

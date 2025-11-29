@@ -142,7 +142,10 @@ Guidelines:
 - semantic_units: Be specific (e.g., "add validate_token function" not just "add function")
 - suggested_topic: Use lowercase with underscores, be consistent (e.g., "authentication", "error_handling", "user_api")
 - depends_on_context: Mention imports, types, or functions this change relies on"#,
-        file_path, hunk.old_start, hunk.old_start + hunk.old_count, diff_content
+        file_path,
+        hunk.old_start,
+        hunk.old_start + hunk.old_count,
+        diff_content
     )
 }
 
@@ -206,8 +209,7 @@ fn extract_json(response: &str) -> Result<&str, String> {
 fn normalize_topic(topic: &str) -> String {
     topic
         .to_lowercase()
-        .replace(' ', "_")
-        .replace('-', "_")
+        .replace([' ', '-'], "_")
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '_')
         .collect()
@@ -292,9 +294,12 @@ impl HeuristicAnalyzer {
         }
 
         // Check if it's mostly whitespace/formatting changes
-        let significant_changes = lines.iter().filter(|l| {
-            matches!(l, DiffLine::Added(s) | DiffLine::Removed(s) if !s.trim().is_empty())
-        }).count();
+        let significant_changes = lines
+            .iter()
+            .filter(
+                |l| matches!(l, DiffLine::Added(s) | DiffLine::Removed(s) if !s.trim().is_empty()),
+            )
+            .count();
 
         if significant_changes == 0 {
             return ChangeCategory::Formatting;
@@ -343,9 +348,7 @@ impl HeuristicAnalyzer {
                     }
                 }
                 // Detect struct definitions
-                else if trimmed.starts_with("struct ")
-                    || trimmed.starts_with("pub struct ")
-                {
+                else if trimmed.starts_with("struct ") || trimmed.starts_with("pub struct ") {
                     if let Some(name) = extract_struct_name(trimmed) {
                         units.push(format!("add struct {}", name));
                     }
@@ -440,7 +443,10 @@ mod tests {
 
     #[test]
     fn test_normalize_topic() {
-        assert_eq!(normalize_topic("User Authentication"), "user_authentication");
+        assert_eq!(
+            normalize_topic("User Authentication"),
+            "user_authentication"
+        );
         assert_eq!(normalize_topic("error-handling"), "error_handling");
         assert_eq!(normalize_topic("API Client"), "api_client");
     }
@@ -458,11 +464,7 @@ mod tests {
 
     #[test]
     fn test_heuristic_category_docs() {
-        let hunk = make_test_hunk(
-            0,
-            "README.md",
-            vec![DiffLine::Added("# Title".to_string())],
-        );
+        let hunk = make_test_hunk(0, "README.md", vec![DiffLine::Added("# Title".to_string())]);
         let analysis = HeuristicAnalyzer::analyze_one(&hunk);
         assert_eq!(analysis.category, ChangeCategory::Documentation);
     }
@@ -480,7 +482,10 @@ mod tests {
 
     #[test]
     fn test_extract_function_name() {
-        assert_eq!(extract_function_name("fn main() {"), Some("main".to_string()));
+        assert_eq!(
+            extract_function_name("fn main() {"),
+            Some("main".to_string())
+        );
         assert_eq!(
             extract_function_name("pub fn validate(x: i32) -> bool {"),
             Some("validate".to_string())
@@ -493,7 +498,10 @@ mod tests {
 
     #[test]
     fn test_extract_struct_name() {
-        assert_eq!(extract_struct_name("struct User {"), Some("User".to_string()));
+        assert_eq!(
+            extract_struct_name("struct User {"),
+            Some("User".to_string())
+        );
         assert_eq!(
             extract_struct_name("pub struct Config {"),
             Some("Config".to_string())
@@ -512,6 +520,9 @@ mod tests {
             ],
         );
         let analysis = HeuristicAnalyzer::analyze_one(&hunk);
-        assert!(analysis.semantic_units.iter().any(|u| u.contains("validate_token")));
+        assert!(analysis
+            .semantic_units
+            .iter()
+            .any(|u| u.contains("validate_token")));
     }
 }
