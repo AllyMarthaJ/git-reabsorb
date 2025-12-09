@@ -36,6 +36,7 @@ pub mod diff_parser;
 pub mod editor;
 pub mod git;
 pub mod models;
+pub mod patch;
 pub mod plan_store;
 pub mod reorganize;
 pub mod utils;
