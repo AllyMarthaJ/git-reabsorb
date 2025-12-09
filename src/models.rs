@@ -28,6 +28,46 @@ impl SourceCommit {
     }
 }
 
+/// A binary file change that cannot be represented as hunks.
+///
+/// Binary files don't have line-based diffs, so they're tracked separately.
+/// During execution, they're applied by copying from the working tree or
+/// removing from the index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryFile {
+    #[serde(with = "path_serde")]
+    pub file_path: PathBuf,
+    pub change_type: BinaryChangeType,
+    /// Source commits that introduced this binary file change.
+    pub likely_source_commits: Vec<String>,
+}
+
+/// The type of change for a binary file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BinaryChangeType {
+    /// New binary file being added
+    Added,
+    /// Existing binary file being modified
+    Modified,
+    /// Binary file being deleted
+    Deleted,
+}
+
+/// A file mode change (e.g., making a file executable).
+///
+/// Mode-only changes don't have content diffs, so they're tracked separately.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModeChange {
+    #[serde(with = "path_serde")]
+    pub file_path: PathBuf,
+    /// The old file mode (e.g., "100644")
+    pub old_mode: String,
+    /// The new file mode (e.g., "100755")
+    pub new_mode: String,
+    /// Source commits that introduced this mode change.
+    pub likely_source_commits: Vec<String>,
+}
+
 /// A single line in a diff
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "content")]
