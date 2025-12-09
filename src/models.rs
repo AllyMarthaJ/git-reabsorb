@@ -136,91 +136,23 @@ mod path_serde {
 }
 
 impl Hunk {
-    /// Convert this hunk to unified diff format suitable for `git apply`
+    /// Convert this hunk to unified diff format suitable for `git apply`.
+    ///
+    /// This generates just the hunk body (header + lines), without file headers.
+    /// For a complete patch with file headers, use `to_full_patch()`.
     #[must_use]
     pub fn to_patch(&self) -> String {
-        let mut patch = String::new();
-
-        // Hunk header
-        patch.push_str(&format!(
-            "@@ -{},{} +{},{} @@\n",
-            self.old_start, self.old_count, self.new_start, self.new_count
-        ));
-
-        // Find the positions of the last Removed/Context and last Added/Context lines
-        // These are the lines that touch EOF for old and new files respectively
-        let last_old_line_idx = self
-            .lines
-            .iter()
-            .rposition(|line| matches!(line, DiffLine::Removed(_) | DiffLine::Context(_)));
-        let last_new_line_idx = self
-            .lines
-            .iter()
-            .rposition(|line| matches!(line, DiffLine::Added(_) | DiffLine::Context(_)));
-
-        // Diff lines
-        for (idx, line) in self.lines.iter().enumerate() {
-            match line {
-                DiffLine::Context(s) => {
-                    patch.push(' ');
-                    patch.push_str(s);
-                    patch.push('\n');
-                    // Emit marker after last context line if either side is missing newline
-                    if Some(idx) == last_old_line_idx
-                        && Some(idx) == last_new_line_idx
-                        && (self.old_missing_newline_at_eof || self.new_missing_newline_at_eof)
-                    {
-                        patch.push_str("\\ No newline at end of file\n");
-                    }
-                }
-                DiffLine::Removed(s) => {
-                    patch.push('-');
-                    patch.push_str(s);
-                    patch.push('\n');
-                    // Emit marker after last removed line if old file is missing newline
-                    if Some(idx) == last_old_line_idx && self.old_missing_newline_at_eof {
-                        patch.push_str("\\ No newline at end of file\n");
-                    }
-                }
-                DiffLine::Added(s) => {
-                    patch.push('+');
-                    patch.push_str(s);
-                    patch.push('\n');
-                    // Emit marker after last added line if new file is missing newline
-                    if Some(idx) == last_new_line_idx && self.new_missing_newline_at_eof {
-                        patch.push_str("\\ No newline at end of file\n");
-                    }
-                }
-            }
-        }
-
-        patch
+        crate::patch::PatchWriter::write_hunk_body(self)
     }
 
-    /// Generate a full patch for this hunk (with file headers)
+    /// Generate a full patch for this hunk (with file headers).
+    ///
+    /// This generates a complete unified diff patch suitable for `git apply`.
+    /// The file change type (new/modified/deleted) is inferred from the hunk's
+    /// line counts.
     #[must_use]
     pub fn to_full_patch(&self) -> String {
-        let path_str = self.file_path.to_string_lossy();
-        let mut patch = String::new();
-
-        // Handle file deletions (new_count == 0) and new files (old_count == 0)
-        let old_path = if self.old_count == 0 {
-            "/dev/null".to_string()
-        } else {
-            format!("a/{}", path_str)
-        };
-
-        let new_path = if self.new_count == 0 {
-            "/dev/null".to_string()
-        } else {
-            format!("b/{}", path_str)
-        };
-
-        patch.push_str(&format!("--- {}\n", old_path));
-        patch.push_str(&format!("+++ {}\n", new_path));
-        patch.push_str(&self.to_patch());
-
-        patch
+        crate::patch::PatchWriter::write_single_hunk(self)
     }
 }
 
