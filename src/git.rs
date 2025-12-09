@@ -77,7 +77,14 @@ pub trait GitOps {
     fn reset_hard(&self, ref_name: &str) -> Result<(), GitError>;
 
     /// Apply hunks to the index (stage them)
-    fn apply_hunks_to_index(&self, hunks: &[&Hunk]) -> Result<(), GitError>;
+    ///
+    /// The `patch_context` provides information about which files are new in the
+    /// commit range, enabling correct patch header generation.
+    fn apply_hunks_to_index(
+        &self,
+        hunks: &[&Hunk],
+        patch_context: &crate::patch::PatchContext,
+    ) -> Result<(), GitError>;
 
     /// Stage all changes in the working tree (git add -A)
     fn stage_all(&self) -> Result<(), GitError>;
@@ -105,6 +112,18 @@ pub trait GitOps {
 
     /// Check if a file exists in the git index
     fn file_in_index(&self, file_path: &Path) -> Result<bool, GitError>;
+
+    /// Run a git command and return the output (for debugging)
+    fn run_git_output(&self, args: &[&str]) -> Result<String, GitError>;
+
+    /// Apply binary file changes to the index.
+    ///
+    /// For added/modified binary files, this stages them from the working tree.
+    /// For deleted binary files, this removes them from the index.
+    fn apply_binary_files(
+        &self,
+        binary_files: &[crate::models::BinaryFile],
+    ) -> Result<(), GitError>;
 }
 
 /// Real implementation of GitOps that calls git commands
@@ -292,43 +311,45 @@ impl GitOps for Git {
         Ok(())
     }
 
-    fn apply_hunks_to_index(&self, hunks: &[&Hunk]) -> Result<(), GitError> {
+    fn apply_hunks_to_index(
+        &self,
+        hunks: &[&Hunk],
+        patch_context: &crate::patch::PatchContext,
+    ) -> Result<(), GitError> {
         if hunks.is_empty() {
             return Ok(());
         }
 
         // Group hunks by file
-        let mut hunks_by_file: HashMap<&Path, Vec<&Hunk>> = HashMap::new();
+        let mut hunks_by_file: HashMap<std::path::PathBuf, Vec<&Hunk>> = HashMap::new();
         for hunk in hunks {
             hunks_by_file
-                .entry(hunk.file_path.as_path())
+                .entry(hunk.file_path.clone())
                 .or_default()
                 .push(hunk);
         }
 
-        // For each file, create a patch and apply it
+        // For each file, use PatchContext to generate correct patch and apply it
         for (file_path, mut file_hunks) in hunks_by_file {
+            let file_path = file_path.as_path();
             // Sort hunks by line number - git expects hunks in order
             file_hunks.sort_by_key(|h| h.old_start);
 
-            let patch = create_patch_for_file(file_path, &file_hunks);
+            // Check actual git index state
+            let file_in_index = self.file_in_index(file_path)?;
+
+            // Use PatchContext to generate the patch with correct headers
+            let (patch, _change_type) =
+                patch_context.generate_patch(file_path, &file_hunks, file_in_index);
+
+            if patch.is_empty() {
+                continue;
+            }
 
             // Write patch to temp file and apply
             let mut temp_file = tempfile::NamedTempFile::new()?;
             temp_file.write_all(patch.as_bytes())?;
             temp_file.flush()?;
-
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            static COUNTER: AtomicUsize = AtomicUsize::new(0);
-            let count = COUNTER.fetch_add(1, Ordering::SeqCst);
-            eprintln!(
-                "DEBUG #{}: Patch for {}:\n{}",
-                count,
-                file_path.display(),
-                patch
-            );
-            eprintln!("Patch file: {}", temp_file.path().display());
-            eprintln!("Patch length: {} bytes", patch.len());
 
             // Apply patch to index
             self.run_git(&[
@@ -407,54 +428,57 @@ impl GitOps for Git {
     }
 
     fn file_in_index(&self, file_path: &Path) -> Result<bool, GitError> {
-        let output = self.run_git(&["ls-files", "--", file_path.to_str().unwrap()])?;
-        Ok(!output.trim().is_empty())
-    }
-}
+        let path_str = file_path.to_str().unwrap();
 
-/// Create a unified diff patch for a single file from multiple hunks
-fn create_patch_for_file(file_path: &Path, hunks: &[&Hunk]) -> String {
-    let mut patch = String::new();
+        // Check with ls-files
+        let result = self.run_git(&["ls-files", "--", path_str]);
+        if let Ok(output) = &result {
+            if !output.trim().is_empty() {
+                return Ok(true);
+            }
+        }
 
-    let path_str = file_path.to_string_lossy();
-
-    // Check if this is a new file or deleted file by looking at the first hunk
-    let is_new_file = hunks.first().map(|h| h.old_count == 0).unwrap_or(false);
-    let is_deleted_file = hunks.first().map(|h| h.new_count == 0).unwrap_or(false);
-
-    // Patch header - handle new files and deletions
-    let old_path = if is_new_file {
-        "/dev/null".to_string()
-    } else {
-        format!("a/{}", path_str)
-    };
-
-    let new_path = if is_deleted_file {
-        "/dev/null".to_string()
-    } else {
-        format!("b/{}", path_str)
-    };
-
-    patch.push_str(&format!("--- {}\n", old_path));
-    patch.push_str(&format!("+++ {}\n", new_path));
-
-    // Add each hunk
-    for hunk in hunks {
-        patch.push_str(&hunk.to_patch());
+        Ok(false)
     }
 
-    patch
+    fn run_git_output(&self, args: &[&str]) -> Result<String, GitError> {
+        self.run_git(args)
+    }
+
+    fn apply_binary_files(
+        &self,
+        binary_files: &[crate::models::BinaryFile],
+    ) -> Result<(), GitError> {
+        use crate::models::BinaryChangeType;
+
+        for binary_file in binary_files {
+            let path_str = binary_file.file_path.to_str().unwrap();
+
+            match binary_file.change_type {
+                BinaryChangeType::Added | BinaryChangeType::Modified => {
+                    // Stage the binary file from the working tree
+                    self.run_git(&["add", "--", path_str])?;
+                }
+                BinaryChangeType::Deleted => {
+                    // Remove the binary file from the index
+                    self.run_git(&["rm", "--cached", "--", path_str])?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{DiffLine, HunkId};
+    use crate::patch::PatchContext;
     use std::path::PathBuf;
 
-    #[test]
-    fn test_create_patch_for_file() {
-        let hunk = Hunk {
+    fn make_modification_hunk() -> Hunk {
+        Hunk {
             id: HunkId(0),
             file_path: PathBuf::from("test.rs"),
             old_start: 1,
@@ -470,11 +494,64 @@ mod tests {
             likely_source_commits: vec!["abc123".to_string()],
             old_missing_newline_at_eof: false,
             new_missing_newline_at_eof: false,
+        }
+    }
+
+    #[test]
+    fn test_patch_for_existing_file() {
+        let hunk = make_modification_hunk();
+        let ctx = PatchContext::empty();
+        // File exists in index -> modification patch
+        let (patch, _) = ctx.generate_patch(Path::new("test.rs"), &[&hunk], true);
+        assert!(patch.contains("--- a/test.rs"), "Should have old path");
+        assert!(patch.contains("+++ b/test.rs"), "Should have new path");
+        assert!(patch.contains("@@ -1,3 +1,4 @@"));
+    }
+
+    #[test]
+    fn test_patch_for_new_file() {
+        let hunk = make_modification_hunk();
+        let ctx = PatchContext::empty();
+        // File does NOT exist in index -> new file patch (transformed)
+        let (patch, _) = ctx.generate_patch(Path::new("test.rs"), &[&hunk], false);
+        assert!(patch.contains("--- /dev/null"), "Should be new file");
+        assert!(patch.contains("+++ b/test.rs"));
+    }
+
+    #[test]
+    fn test_patch_for_new_file_in_range() {
+        let hunk = make_modification_hunk();
+        // Mark file as new in range - even with modification hunks,
+        // it should generate a new file patch
+        let ctx = PatchContext::new(["test.rs"]);
+        let (patch, _) = ctx.generate_patch(Path::new("test.rs"), &[&hunk], false);
+        assert!(patch.contains("--- /dev/null"), "Should be new file");
+        assert!(patch.contains("+++ b/test.rs"));
+    }
+
+    #[test]
+    fn test_patch_for_deletion() {
+        let hunk = Hunk {
+            id: HunkId(0),
+            file_path: PathBuf::from("test.rs"),
+            old_start: 1,
+            old_count: 3,
+            new_start: 0,
+            new_count: 0,
+            lines: vec![
+                DiffLine::Removed("line1".to_string()),
+                DiffLine::Removed("line2".to_string()),
+                DiffLine::Removed("line3".to_string()),
+            ],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
         };
 
-        let patch = create_patch_for_file(Path::new("test.rs"), &[&hunk]);
+        let ctx = PatchContext::empty();
+        // File exists and all hunks are deletions -> delete patch
+        let (patch, _) = ctx.generate_patch(Path::new("test.rs"), &[&hunk], true);
         assert!(patch.contains("--- a/test.rs"));
-        assert!(patch.contains("+++ b/test.rs"));
-        assert!(patch.contains("@@ -1,3 +1,4 @@"));
+        assert!(patch.contains("+++ /dev/null"), "Should delete file");
     }
 }
