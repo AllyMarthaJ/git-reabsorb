@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::cli::StrategyArg;
-use crate::diff_parser::{parse_diff, DiffParseError};
+use crate::diff_parser::{parse_diff_full, DiffParseError, ParsedDiff};
 use crate::git::{GitError, GitOps};
-use crate::models::{Hunk, PlannedCommit, SourceCommit};
+use crate::models::{BinaryFile, Hunk, ModeChange, PlannedCommit, SourceCommit};
+use crate::patch::FileMode;
 use crate::reorganize::ReorganizeError;
 
 use super::StrategyFactory;
@@ -71,7 +73,34 @@ impl<'a, G: GitOps> Planner<'a, G> {
         diff_output: &str,
         file_to_commits: &HashMap<String, Vec<String>>,
     ) -> Result<Vec<Hunk>, DiffParseError> {
-        let mut hunks = parse_diff(diff_output, &[], 0)?;
+        let (hunks, _binary_files, _mode_changes, _file_modes) =
+            self.parse_diff_full_with_commit_mapping(diff_output, file_to_commits)?;
+        Ok(hunks)
+    }
+
+    /// Parse diff with commit mapping, returning hunks, binary files, and mode changes.
+    #[allow(clippy::type_complexity)]
+    pub fn parse_diff_full_with_commit_mapping(
+        &self,
+        diff_output: &str,
+        file_to_commits: &HashMap<String, Vec<String>>,
+    ) -> Result<
+        (
+            Vec<Hunk>,
+            Vec<BinaryFile>,
+            Vec<ModeChange>,
+            HashMap<PathBuf, FileMode>,
+        ),
+        DiffParseError,
+    > {
+        let ParsedDiff {
+            mut hunks,
+            mut binary_files,
+            mut mode_changes,
+            file_modes,
+        } = parse_diff_full(diff_output, &[], 0)?;
+
+        // Map hunks to their source commits
         for hunk in &mut hunks {
             if let Some(commits) =
                 file_to_commits.get(&hunk.file_path.to_string_lossy().to_string())
@@ -79,7 +108,26 @@ impl<'a, G: GitOps> Planner<'a, G> {
                 hunk.likely_source_commits.clone_from(commits);
             }
         }
-        Ok(hunks)
+
+        // Map binary files to their source commits
+        for binary_file in &mut binary_files {
+            if let Some(commits) =
+                file_to_commits.get(&binary_file.file_path.to_string_lossy().to_string())
+            {
+                binary_file.likely_source_commits.clone_from(commits);
+            }
+        }
+
+        // Map mode changes to their source commits
+        for mode_change in &mut mode_changes {
+            if let Some(commits) =
+                file_to_commits.get(&mode_change.file_path.to_string_lossy().to_string())
+            {
+                mode_change.likely_source_commits.clone_from(commits);
+            }
+        }
+
+        Ok((hunks, binary_files, mode_changes, file_modes))
     }
 
     pub fn draft_plan(
@@ -89,6 +137,49 @@ impl<'a, G: GitOps> Planner<'a, G> {
         hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
         new_files_to_commits: &HashMap<String, Vec<String>>,
+    ) -> Result<PlanDraft, ReorganizeError> {
+        self.draft_plan_with_extra_changes(
+            strategy,
+            source_commits,
+            hunks,
+            file_to_commits,
+            new_files_to_commits,
+            &[],
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_plan_with_binary_files(
+        &self,
+        strategy: StrategyArg,
+        source_commits: &[SourceCommit],
+        hunks: &[Hunk],
+        file_to_commits: &HashMap<String, Vec<String>>,
+        new_files_to_commits: &HashMap<String, Vec<String>>,
+        binary_files: &[BinaryFile],
+    ) -> Result<PlanDraft, ReorganizeError> {
+        self.draft_plan_with_extra_changes(
+            strategy,
+            source_commits,
+            hunks,
+            file_to_commits,
+            new_files_to_commits,
+            binary_files,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_plan_with_extra_changes(
+        &self,
+        strategy: StrategyArg,
+        source_commits: &[SourceCommit],
+        hunks: &[Hunk],
+        file_to_commits: &HashMap<String, Vec<String>>,
+        new_files_to_commits: &HashMap<String, Vec<String>>,
+        binary_files: &[BinaryFile],
+        mode_changes: &[ModeChange],
     ) -> Result<PlanDraft, ReorganizeError> {
         let reorganizer = self.strategies.create(strategy);
         let strategy_name = reorganizer.name().to_string();
@@ -104,6 +195,8 @@ impl<'a, G: GitOps> Planner<'a, G> {
             hunks: hunks.to_vec(),
             file_to_commits: file_to_commits.clone(),
             new_files_to_commits: new_files_to_commits.clone(),
+            binary_files: binary_files.to_vec(),
+            mode_changes: mode_changes.to_vec(),
         })
     }
 }
@@ -115,6 +208,10 @@ pub struct PlanDraft {
     pub hunks: Vec<Hunk>,
     pub file_to_commits: HashMap<String, Vec<String>>,
     pub new_files_to_commits: HashMap<String, Vec<String>>,
+    /// Binary files that cannot be represented as hunks.
+    pub binary_files: Vec<BinaryFile>,
+    /// Mode-only changes (e.g., making files executable).
+    pub mode_changes: Vec<ModeChange>,
 }
 
 fn retain_non_empty(planned_commits: &mut Vec<PlannedCommit>) -> usize {
