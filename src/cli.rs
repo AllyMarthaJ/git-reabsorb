@@ -21,6 +21,8 @@ pub enum Command {
     Apply(ApplyArgs),
     /// Reset to the pre-reabsorb ref created during planning
     Reset,
+    /// Show status of current plan (for debugging)
+    Status,
 }
 
 #[derive(Args, Debug, Clone)]

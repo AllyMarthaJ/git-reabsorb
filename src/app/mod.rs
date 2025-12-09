@@ -384,6 +384,114 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             )))
         }
     }
+
+    fn handle_status(&mut self) -> Result<(), AppError> {
+        println!("=== Git Reabsorb Status ===\n");
+
+        // Current git state
+        let head = self.git.get_head()?;
+        println!("Current HEAD: {}", short_sha(&head));
+
+        if let Ok(branch) = self.git.current_branch_name() {
+            println!("Current branch: {}", branch);
+        }
+
+        // Pre-reabsorb state
+        println!("\n--- Pre-reabsorb State ---");
+        if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
+            let pre = self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
+            println!(
+                "Pre-reabsorb ref: {} -> {}",
+                self.pre_reabsorb_ref,
+                short_sha(&pre)
+            );
+        } else {
+            println!("No pre-reabsorb state saved");
+        }
+
+        // Plan state
+        println!("\n--- Saved Plan ---");
+        if !self.plan_store.exists() {
+            println!("No saved plan found");
+            return Ok(());
+        }
+
+        let plan = self.plan_store.load()?;
+        println!("Strategy: {}", plan.strategy);
+        println!("Base SHA: {}", short_sha(&plan.base_sha));
+        println!("Original HEAD: {}", short_sha(&plan.original_head));
+        println!(
+            "Progress: {}/{} commits",
+            plan.next_commit_index,
+            plan.commits.len()
+        );
+
+        // Show commits
+        println!("\n--- Planned Commits ---");
+        for (i, commit) in plan.commits.iter().enumerate() {
+            let status = if i < plan.next_commit_index {
+                if let Some(sha) = &commit.created_sha {
+                    format!("[DONE: {}]", short_sha(sha))
+                } else {
+                    "[DONE]".to_string()
+                }
+            } else if i == plan.next_commit_index {
+                "[NEXT]".to_string()
+            } else {
+                "[PENDING]".to_string()
+            };
+            println!(
+                "  {}. {} \"{}\" ({} changes)",
+                i + 1,
+                status,
+                commit.description.short,
+                commit.changes.len()
+            );
+        }
+
+        // If there's a next commit, show details
+        if plan.next_commit_index < plan.commits.len() {
+            let next_commit = &plan.commits[plan.next_commit_index];
+            println!("\n--- Next Commit Details ---");
+            println!("Message: {}", next_commit.description.short);
+            println!("Changes: {} hunks", next_commit.changes.len());
+
+            // Show files involved
+            let hunks = plan.get_working_tree_hunks();
+            let planned_commits = plan.to_planned_commits();
+            let planned = &planned_commits[plan.next_commit_index];
+
+            let mut files: std::collections::BTreeSet<&std::path::Path> =
+                std::collections::BTreeSet::new();
+            for change in &planned.changes {
+                if let Some(hunk) = change.resolve(&hunks) {
+                    files.insert(&hunk.file_path);
+                }
+            }
+            println!("Files:");
+            for file in files {
+                // Check if file is in index
+                let in_index = self.git.file_in_index(file).unwrap_or(false);
+                println!("  {} (in_index={})", file.display(), in_index);
+            }
+        }
+
+        // Show all files in index for debugging
+        println!("\n--- Git Index Status ---");
+        if let Ok(output) = self.git.run_git_output(&["ls-files"]) {
+            let files: Vec<&str> = output.lines().take(20).collect();
+            println!("Files in index (first 20):");
+            for f in &files {
+                println!("  {}", f);
+            }
+            let total = output.lines().count();
+            if total > 20 {
+                println!("  ... and {} more", total - 20);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn print_planned_commits(commits: &[PlannedCommit], offset: usize) {
