@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{CommitDescription, Hunk, PlannedChange, PlannedCommit};
+use crate::models::{
+    BinaryFile, CommitDescription, Hunk, ModeChange, PlannedChange, PlannedCommit,
+};
 
 const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
@@ -33,6 +35,14 @@ pub struct SavedPlan {
     pub working_tree_hunks: Vec<Hunk>,
     pub file_to_commits: Vec<(String, Vec<String>)>,
     pub new_files_to_commits: Vec<(String, Vec<String>)>,
+    /// Binary files that cannot be represented as hunks.
+    /// These are applied separately during execution.
+    #[serde(default)]
+    pub binary_files: Vec<BinaryFile>,
+    /// Mode-only changes (e.g., making files executable).
+    /// These are applied separately during execution.
+    #[serde(default)]
+    pub mode_changes: Vec<ModeChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +62,8 @@ impl SavedPlan {
         working_tree_hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
         new_files_to_commits: &HashMap<String, Vec<String>>,
+        binary_files: &[BinaryFile],
+        mode_changes: &[ModeChange],
     ) -> Self {
         Self {
             version: 1,
@@ -69,6 +81,8 @@ impl SavedPlan {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            binary_files: binary_files.to_vec(),
+            mode_changes: mode_changes.to_vec(),
         }
     }
 
@@ -89,6 +103,14 @@ impl SavedPlan {
 
     pub fn get_new_files_to_commits(&self) -> HashMap<String, Vec<String>> {
         self.new_files_to_commits.iter().cloned().collect()
+    }
+
+    pub fn get_binary_files(&self) -> Vec<BinaryFile> {
+        self.binary_files.clone()
+    }
+
+    pub fn get_mode_changes(&self) -> Vec<ModeChange> {
+        self.mode_changes.clone()
     }
 
     pub fn remaining_commits(&self) -> &[SavedCommit] {
@@ -239,6 +261,8 @@ mod tests {
             std::slice::from_ref(&hunk),
             &HashMap::new(),
             &HashMap::new(),
+            &[],
+            &[],
         );
 
         let restored = saved.to_planned_commits();
