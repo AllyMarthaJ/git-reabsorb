@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::models::{DiffLine, Hunk, HunkId};
+use crate::models::{BinaryChangeType, BinaryFile, DiffLine, Hunk, HunkId, ModeChange};
+use crate::patch::FileMode;
 
 /// Errors that can occur during diff parsing
 #[derive(Debug, thiserror::Error)]
@@ -11,32 +13,185 @@ pub enum DiffParseError {
     UnexpectedFormat(String),
 }
 
+/// Result of parsing a diff - contains text hunks, binary files, and mode changes.
+#[derive(Debug, Default)]
+pub struct ParsedDiff {
+    pub hunks: Vec<Hunk>,
+    pub binary_files: Vec<BinaryFile>,
+    /// Mode-only changes (files with mode change but no content change).
+    /// For files with both content and mode changes, use `file_modes`.
+    pub mode_changes: Vec<ModeChange>,
+    /// File modes for all files that have non-default modes.
+    /// This includes new files with specific modes, deleted files, and mode changes.
+    pub file_modes: HashMap<PathBuf, FileMode>,
+}
+
 /// Parse a unified diff output into hunks.
 ///
 /// `likely_source_commits` is a list of commit SHAs that likely contributed
 /// to these hunks. For single-commit diffs (like `git show`), this is just
 /// that commit. For working tree diffs, this can be determined by analyzing
 /// which commits touched each file.
+///
+/// Note: This function ignores binary files. Use `parse_diff_full` if you need
+/// to track binary file changes as well.
 pub fn parse_diff(
     diff_output: &str,
     likely_source_commits: &[String],
     hunk_id_start: usize,
 ) -> Result<Vec<Hunk>, DiffParseError> {
-    let mut hunks = Vec::new();
+    parse_diff_full(diff_output, likely_source_commits, hunk_id_start).map(|r| r.hunks)
+}
+
+/// Parse a unified diff output into hunks and binary file changes.
+///
+/// This is the full version that tracks both text hunks and binary file changes.
+/// Use `parse_diff` if you only need text hunks.
+pub fn parse_diff_full(
+    diff_output: &str,
+    likely_source_commits: &[String],
+    hunk_id_start: usize,
+) -> Result<ParsedDiff, DiffParseError> {
+    let mut result = ParsedDiff::default();
     let mut current_file: Option<PathBuf> = None;
     let mut current_hunk: Option<HunkBuilder> = None;
     let mut hunk_id = hunk_id_start;
+    // Track whether the current file is new or deleted (for binary files)
+    let mut current_file_is_new = false;
+    let mut current_file_is_deleted = false;
+    // Track mode changes
+    let mut current_old_mode: Option<String> = None;
+    let mut current_new_mode: Option<String> = None;
+    let mut current_file_has_hunks = false;
+    let mut current_file_is_binary = false;
+
+    // Helper to finalize file mode information for the previous file.
+    // This stores:
+    // 1. file_modes: Mode info for ALL files with non-default modes (new files, deleted files, mode changes)
+    // 2. mode_changes: Mode-only changes (files with mode change but no content hunks)
+    let finalize_file_mode = |result: &mut ParsedDiff,
+                              file: &Option<PathBuf>,
+                              old_mode: &Option<String>,
+                              new_mode: &Option<String>,
+                              is_new: bool,
+                              is_deleted: bool,
+                              has_hunks: bool,
+                              is_binary: bool| {
+        let Some(file_path) = file else { return };
+
+        // Store file mode in file_modes map for patch generation
+        if is_new {
+            if let Some(mode) = new_mode {
+                result
+                    .file_modes
+                    .insert(file_path.clone(), FileMode::New(mode.clone()));
+            }
+        } else if is_deleted {
+            if let Some(mode) = old_mode {
+                result
+                    .file_modes
+                    .insert(file_path.clone(), FileMode::Deleted(mode.clone()));
+            }
+        } else if let (Some(old), Some(new)) = (old_mode, new_mode) {
+            // Mode change on existing file
+            result.file_modes.insert(
+                file_path.clone(),
+                FileMode::Changed {
+                    old: old.clone(),
+                    new: new.clone(),
+                },
+            );
+
+            // Also add to mode_changes for mode-only files (no content hunks)
+            // Binary files have their mode handled when we `git add` them
+            if !has_hunks && !is_binary {
+                result.mode_changes.push(ModeChange {
+                    file_path: file_path.clone(),
+                    old_mode: old.clone(),
+                    new_mode: new.clone(),
+                    likely_source_commits: likely_source_commits.to_vec(),
+                });
+            }
+        }
+    };
 
     for line in diff_output.lines() {
         // New file diff header
         if line.starts_with("diff --git ") {
             // Finish any in-progress hunk
             if let Some(builder) = current_hunk.take() {
-                hunks.push(builder.build(likely_source_commits));
+                result.hunks.push(builder.build(likely_source_commits));
             }
+
+            // Finalize file mode for the previous file
+            finalize_file_mode(
+                &mut result,
+                &current_file,
+                &current_old_mode,
+                &current_new_mode,
+                current_file_is_new,
+                current_file_is_deleted,
+                current_file_has_hunks,
+                current_file_is_binary,
+            );
 
             // Parse file path from "diff --git a/path b/path"
             current_file = parse_diff_header(line);
+            current_file_is_new = false;
+            current_file_is_deleted = false;
+            current_old_mode = None;
+            current_new_mode = None;
+            current_file_has_hunks = false;
+            current_file_is_binary = false;
+            continue;
+        }
+
+        // Track if this is a new file (and capture mode if present)
+        // Format: "new file mode 100755" or just "new file"
+        if let Some(rest) = line.strip_prefix("new file mode ") {
+            current_file_is_new = true;
+            current_new_mode = Some(rest.to_string());
+            continue;
+        }
+        if line.starts_with("new file") {
+            current_file_is_new = true;
+            continue;
+        }
+
+        // Track if this is a deleted file (and capture mode if present)
+        // Format: "deleted file mode 100644" or just "deleted file"
+        if let Some(rest) = line.strip_prefix("deleted file mode ") {
+            current_file_is_deleted = true;
+            current_old_mode = Some(rest.to_string());
+            continue;
+        }
+        if line.starts_with("deleted file") {
+            current_file_is_deleted = true;
+            continue;
+        }
+
+        // Track old mode (for mode-only changes on existing files)
+        if let Some(mode) = line.strip_prefix("old mode ") {
+            current_old_mode = Some(mode.to_string());
+            continue;
+        }
+
+        // Track new mode (for mode-only changes on existing files)
+        if let Some(mode) = line.strip_prefix("new mode ") {
+            current_new_mode = Some(mode.to_string());
+            continue;
+        }
+
+        // Handle --- line for deleted files (to get the path)
+        if let Some(path) = line.strip_prefix("--- a/") {
+            if current_file_is_deleted {
+                current_file = Some(PathBuf::from(path));
+            }
+            continue;
+        }
+
+        // Skip other --- lines
+        if line.starts_with("--- ") {
             continue;
         }
 
@@ -44,32 +199,47 @@ pub fn parse_diff(
         if line.starts_with("+++ ") {
             if let Some(path) = line.strip_prefix("+++ b/") {
                 current_file = Some(PathBuf::from(path));
-            } else if line.starts_with("+++ /dev/null") {
-                // File was deleted, keep the old path from ---
+            }
+            // +++ /dev/null means deleted, keep the path from ---
+            continue;
+        }
+
+        // Handle binary files
+        if line.starts_with("Binary files") {
+            current_file_is_binary = true;
+            if let Some(ref file_path) = current_file {
+                let change_type = if current_file_is_new {
+                    BinaryChangeType::Added
+                } else if current_file_is_deleted {
+                    BinaryChangeType::Deleted
+                } else {
+                    BinaryChangeType::Modified
+                };
+
+                result.binary_files.push(BinaryFile {
+                    file_path: file_path.clone(),
+                    change_type,
+                    likely_source_commits: likely_source_commits.to_vec(),
+                });
             }
             continue;
         }
 
-        // Skip --- lines, index lines, etc.
-        if line.starts_with("--- ")
-            || line.starts_with("index ")
-            || line.starts_with("new file")
-            || line.starts_with("deleted file")
-            || line.starts_with("old mode")
-            || line.starts_with("new mode")
+        // Skip other metadata lines
+        if line.starts_with("index ")
             || line.starts_with("similarity index")
             || line.starts_with("rename from")
             || line.starts_with("rename to")
-            || line.starts_with("Binary files")
         {
             continue;
         }
 
         // Hunk header
         if line.starts_with("@@ ") {
+            current_file_has_hunks = true;
             // Finish any in-progress hunk
             if let Some(builder) = current_hunk.take() {
-                hunks.push(builder.build(likely_source_commits));
+                result.hunks.push(builder.build(likely_source_commits));
             }
 
             // Parse hunk header
@@ -120,10 +290,22 @@ pub fn parse_diff(
 
     // Finish final hunk
     if let Some(builder) = current_hunk.take() {
-        hunks.push(builder.build(likely_source_commits));
+        result.hunks.push(builder.build(likely_source_commits));
     }
 
-    Ok(hunks)
+    // Finalize file mode for the last file
+    finalize_file_mode(
+        &mut result,
+        &current_file,
+        &current_old_mode,
+        &current_new_mode,
+        current_file_is_new,
+        current_file_is_deleted,
+        current_file_has_hunks,
+        current_file_is_binary,
+    );
+
+    Ok(result)
 }
 
 /// Parse the diff --git header to extract file path
@@ -413,5 +595,163 @@ diff --git a/b.rs b/b.rs
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].id.0, 100);
         assert_eq!(hunks[1].id.0, 101);
+    }
+
+    #[test]
+    fn test_parse_binary_file_new() {
+        let diff = r#"diff --git a/image.png b/image.png
+new file mode 100644
+index 0000000..abcdefg
+Binary files /dev/null and b/image.png differ
+"#;
+
+        let result = parse_diff_full(diff, &["commit1".to_string()], 0).unwrap();
+        assert_eq!(result.hunks.len(), 0);
+        assert_eq!(result.binary_files.len(), 1);
+        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+        assert_eq!(result.binary_files[0].change_type, BinaryChangeType::Added);
+        assert_eq!(
+            result.binary_files[0].likely_source_commits,
+            vec!["commit1".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_binary_file_modified() {
+        let diff = r#"diff --git a/image.png b/image.png
+index 1234567..abcdefg 100644
+Binary files a/image.png and b/image.png differ
+"#;
+
+        let result = parse_diff_full(diff, &[], 0).unwrap();
+        assert_eq!(result.hunks.len(), 0);
+        assert_eq!(result.binary_files.len(), 1);
+        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+        assert_eq!(
+            result.binary_files[0].change_type,
+            BinaryChangeType::Modified
+        );
+    }
+
+    #[test]
+    fn test_parse_binary_file_deleted() {
+        let diff = r#"diff --git a/image.png b/image.png
+deleted file mode 100644
+index abcdefg..0000000
+Binary files a/image.png and /dev/null differ
+"#;
+
+        let result = parse_diff_full(diff, &[], 0).unwrap();
+        assert_eq!(result.hunks.len(), 0);
+        assert_eq!(result.binary_files.len(), 1);
+        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+        assert_eq!(
+            result.binary_files[0].change_type,
+            BinaryChangeType::Deleted
+        );
+    }
+
+    #[test]
+    fn test_parse_mixed_text_and_binary() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,3 @@
+ fn main() {
++    println!("hello");
+ }
+diff --git a/image.png b/image.png
+new file mode 100644
+index 0000000..abcdefg
+Binary files /dev/null and b/image.png differ
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1,2 @@
+ pub fn foo() {}
++pub fn bar() {}
+"#;
+
+        let result = parse_diff_full(diff, &[], 0).unwrap();
+        assert_eq!(result.hunks.len(), 2);
+        assert_eq!(result.binary_files.len(), 1);
+        assert_eq!(result.hunks[0].file_path, PathBuf::from("src/main.rs"));
+        assert_eq!(result.hunks[1].file_path, PathBuf::from("src/lib.rs"));
+        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+    }
+
+    #[test]
+    fn test_parse_mode_only_change() {
+        let diff = r#"diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+"#;
+
+        let result = parse_diff_full(diff, &["commit1".to_string()], 0).unwrap();
+        assert_eq!(result.hunks.len(), 0);
+        assert_eq!(result.binary_files.len(), 0);
+        assert_eq!(result.mode_changes.len(), 1);
+        assert_eq!(result.mode_changes[0].file_path, PathBuf::from("script.sh"));
+        assert_eq!(result.mode_changes[0].old_mode, "100644");
+        assert_eq!(result.mode_changes[0].new_mode, "100755");
+        assert_eq!(
+            result.mode_changes[0].likely_source_commits,
+            vec!["commit1".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_mode_change_with_content_change() {
+        // When a file has both mode change and content change,
+        // the mode is stored in file_modes for patch generation.
+        // mode_changes only contains mode-only changes (no content).
+        let diff = r#"diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+index 1234567..abcdefg
+--- a/script.sh
++++ b/script.sh
+@@ -1 +1,2 @@
+ echo "hello"
++echo "world"
+"#;
+
+        let result = parse_diff_full(diff, &[], 0).unwrap();
+        assert_eq!(result.hunks.len(), 1);
+        assert_eq!(result.binary_files.len(), 0);
+        // mode_changes is empty because this file has content hunks
+        assert_eq!(result.mode_changes.len(), 0);
+        // Mode is stored in file_modes for patch generation
+        assert_eq!(result.file_modes.len(), 1);
+        let mode = result.file_modes.get(&PathBuf::from("script.sh")).unwrap();
+        match mode {
+            FileMode::Changed { old, new } => {
+                assert_eq!(old, "100644");
+                assert_eq!(new, "100755");
+            }
+            _ => panic!("Expected FileMode::Changed"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multiple_mode_changes() {
+        let diff = r#"diff --git a/script1.sh b/script1.sh
+old mode 100644
+new mode 100755
+diff --git a/script2.sh b/script2.sh
+old mode 100644
+new mode 100755
+"#;
+
+        let result = parse_diff_full(diff, &[], 0).unwrap();
+        assert_eq!(result.mode_changes.len(), 2);
+        assert_eq!(
+            result.mode_changes[0].file_path,
+            PathBuf::from("script1.sh")
+        );
+        assert_eq!(
+            result.mode_changes[1].file_path,
+            PathBuf::from("script2.sh")
+        );
     }
 }
