@@ -1,9 +1,10 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
-use crate::models::{CommitDescription, DiffLine, Hunk, PlannedCommit};
+use crate::models::{BinaryFile, CommitDescription, Hunk, ModeChange, PlannedCommit};
+use crate::patch::{FileMode, PatchContext};
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 use crate::utils::short_sha;
 
@@ -33,11 +34,15 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &self,
         hunks: &[Hunk],
         planned_commits: &[PlannedCommit],
-        _new_files_to_commits: &HashMap<String, Vec<String>>,
+        new_files_to_commits: &HashMap<String, Vec<String>>,
+        binary_files: &[BinaryFile],
+        mode_changes: &[ModeChange],
+        file_modes: &HashMap<PathBuf, FileMode>,
         no_verify: bool,
         no_editor: bool,
         plan: &mut SavedPlan,
@@ -45,28 +50,21 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         let total = planned_commits.len();
         let start_index = plan.next_commit_index;
 
-        // Determine which files existed at HEAD (before unstaging)
-        let mut files_at_head: HashSet<std::path::PathBuf> = HashSet::new();
-        for hunk in hunks {
-            if self.git.file_in_index(&hunk.file_path)? {
-                files_at_head.insert(hunk.file_path.clone());
-            }
-        }
+        // Create patch context from new_files_to_commits and file_modes
+        // This tells PatchContext which files are NEW in the commit range
+        // (didn't exist at base), and the file modes for proper patch headers.
+        let patch_context = PatchContext::with_file_modes(new_files_to_commits.keys(), file_modes);
 
+        // Track which hunks have been applied (for line number adjustment)
         let mut applied_hunks_per_file: HashMap<std::path::PathBuf, Vec<Hunk>> = HashMap::new();
-        let mut created_new_files: HashSet<std::path::PathBuf> = HashSet::new();
 
-        // Reconstruct applied hunks from previous commits
+        // Track whether extra changes have been applied (only apply once)
+        let mut extra_changes_applied = start_index > 0;
+
+        // Reconstruct applied hunks from previous commits (for resumed execution)
         for commit in planned_commits.iter().take(start_index) {
             for change in &commit.changes {
                 if let Some(hunk) = change.resolve(hunks) {
-                    // Track if we created a new file in this commit
-                    if !files_at_head.contains(&hunk.file_path)
-                        && !created_new_files.contains(&hunk.file_path)
-                    {
-                        created_new_files.insert(hunk.file_path.clone());
-                    }
-
                     applied_hunks_per_file
                         .entry(hunk.file_path.clone())
                         .or_default()
@@ -84,14 +82,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
                 .filter_map(|change| change.resolve(hunks))
                 .collect();
 
-            // Identify which files in this commit are genuinely new (didn't exist at HEAD)
-            let new_file_paths: Vec<&std::path::PathBuf> = commit_hunk_refs
-                .iter()
-                .map(|h| &h.file_path)
-                .filter(|f| !files_at_head.contains(*f) && !created_new_files.contains(*f))
-                .collect();
-
-            let help_text = generate_commit_help(&commit_hunk_refs, &new_file_paths);
+            let help_text = generate_commit_help(&commit_hunk_refs);
             let template = commit_message_template(&planned.description);
             let message = if no_editor {
                 template
@@ -99,16 +90,17 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
                 self.editor.edit(&template, &help_text)?
             };
 
-            // Adjust hunks based on what's been applied to each file
-            let adjusted_hunks = adjust_hunks_for_current_index(
-                &commit_hunk_refs,
-                &applied_hunks_per_file,
-                &files_at_head,
-                &created_new_files,
-            )?;
+            // Adjust hunk line numbers based on what's been applied to each file.
+            // Note: Patch header generation (new/modified/deleted) is handled by
+            // PatchContext which uses new_files_to_commits and index state.
+            let adjusted_hunks =
+                adjust_hunks_for_current_index(&commit_hunk_refs, &applied_hunks_per_file);
 
             // Skip this commit if all its changes were already applied in previous commits
-            if adjusted_hunks.is_empty() {
+            // AND there are no extra changes (binary files, mode changes) to apply
+            let has_pending_extra_changes =
+                !extra_changes_applied && (!binary_files.is_empty() || !mode_changes.is_empty());
+            if adjusted_hunks.is_empty() && !has_pending_extra_changes {
                 println!("  Skipped (all changes already applied)");
                 plan.mark_commit_created("SKIPPED".to_string());
                 self.plan_store.save(plan)?;
@@ -117,20 +109,38 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
 
             let adjusted_refs: Vec<&Hunk> = adjusted_hunks.iter().collect();
 
-            self.git.apply_hunks_to_index(&adjusted_refs)?;
+            if !adjusted_refs.is_empty() {
+                self.git
+                    .apply_hunks_to_index(&adjusted_refs, &patch_context)?;
+            }
+
+            // Apply extra changes (binary files, mode-only changes) on the first non-skipped commit
+            if !extra_changes_applied {
+                if !binary_files.is_empty() {
+                    println!("  Applying {} binary files...", binary_files.len());
+                    self.git.apply_binary_files(binary_files)?;
+                }
+                // Mode changes for files WITH content hunks are handled via patch headers.
+                // Here we only apply mode-only changes (files with no content hunks).
+                let mode_only_changes: Vec<_> = mode_changes
+                    .iter()
+                    .filter(|mc| !hunks.iter().any(|h| h.file_path == mc.file_path))
+                    .collect();
+                if !mode_only_changes.is_empty() {
+                    println!(
+                        "  Applying {} mode-only changes...",
+                        mode_only_changes.len()
+                    );
+                    apply_mode_only_patches(self.git, &mode_only_changes)?;
+                }
+                extra_changes_applied = true;
+            }
 
             let new_sha = self.git.commit(&message, no_verify)?;
             println!("  Created {}", short_sha(&new_sha));
 
-            // Track these hunks as applied for subsequent commits
+            // Track these hunks as applied for line number adjustment in subsequent commits
             for hunk in commit_hunk_refs {
-                // Track if we created a new file in this commit
-                if !files_at_head.contains(&hunk.file_path)
-                    && !created_new_files.contains(&hunk.file_path)
-                {
-                    created_new_files.insert(hunk.file_path.clone());
-                }
-
                 applied_hunks_per_file
                     .entry(hunk.file_path.clone())
                     .or_default()
@@ -145,7 +155,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
     }
 }
 
-fn generate_commit_help(hunks: &[&Hunk], new_files: &[&std::path::PathBuf]) -> String {
+fn generate_commit_help(hunks: &[&Hunk]) -> String {
     let files: BTreeSet<_> = hunks.iter().map(|h| &h.file_path).collect();
     let source_commits: BTreeSet<_> = hunks
         .iter()
@@ -155,18 +165,11 @@ fn generate_commit_help(hunks: &[&Hunk], new_files: &[&std::path::PathBuf]) -> S
     let mut lines = vec!["Files in this commit:".to_string()];
     lines.extend(files.iter().map(|f| format!("  {}", f.display())));
 
-    if !new_files.is_empty() {
-        lines.push(String::new());
-        lines.push("New files:".to_string());
-        lines.extend(new_files.iter().map(|f| format!("  {}", f.display())));
-    }
-
     lines.push(String::new());
     lines.push(format!(
-        "Total: {} hunks, {} files, {} new",
+        "Total: {} hunks, {} files",
         hunks.len(),
-        files.len(),
-        new_files.len()
+        files.len()
     ));
 
     if !source_commits.is_empty() {
@@ -196,15 +199,18 @@ fn commit_message_template(desc: &CommitDescription) -> String {
     format!("{}\n\n{}", short, long)
 }
 
-/// Adjust hunks based on what's been applied to each file.
-/// Files that didn't exist at HEAD and haven't been created yet are converted to "new file" hunks.
-/// Files that existed at HEAD or have been created have their old_start adjusted based on previously applied hunks.
+/// Adjust hunk line numbers based on previously applied hunks.
+///
+/// When hunks are applied sequentially, later hunks need their line numbers
+/// adjusted to account for lines added/removed by earlier hunks.
+///
+/// Note: Patch header generation (new/modified/deleted) is handled by `PatchContext`,
+/// which uses `new_files_to_commits` and git index state. This function only adjusts
+/// line numbers for modifications to existing files.
 fn adjust_hunks_for_current_index(
     hunks: &[&Hunk],
     applied_hunks_per_file: &HashMap<std::path::PathBuf, Vec<Hunk>>,
-    files_at_head: &HashSet<std::path::PathBuf>,
-    created_new_files: &HashSet<std::path::PathBuf>,
-) -> Result<Vec<Hunk>, GitError> {
+) -> Vec<Hunk> {
     let mut adjusted = Vec::new();
 
     // Group hunks by file
@@ -219,68 +225,63 @@ fn adjust_hunks_for_current_index(
     for (file_path, file_hunks) in hunks_by_file {
         let file_path_buf = file_path.to_path_buf();
 
-        // Check if this is a genuinely new file that hasn't been created yet
-        let is_genuinely_new =
-            !files_at_head.contains(&file_path_buf) && !created_new_files.contains(&file_path_buf);
+        // Get previously applied hunks for this file
+        let applied = applied_hunks_per_file
+            .get(&file_path_buf)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
 
-        if is_genuinely_new {
-            // File didn't exist at HEAD and we haven't created it yet - create a "new file" hunk
-            let mut all_lines = Vec::new();
+        for hunk in file_hunks {
+            let mut adjusted_hunk = (*hunk).clone();
 
-            for hunk in &file_hunks {
-                for line in &hunk.lines {
-                    // Convert all lines to additions
-                    let content = match line {
-                        DiffLine::Added(s) => s,
-                        DiffLine::Context(s) => s,
-                        DiffLine::Removed(s) => s,
-                    };
-                    all_lines.push(DiffLine::Added(content.clone()));
+            // Adjust old_start based on all previously applied hunks that came before this one.
+            // Each applied hunk shifts subsequent line numbers by (new_count - old_count).
+            for applied_hunk in applied {
+                if applied_hunk.old_start < hunk.old_start {
+                    let delta = (applied_hunk.new_count as i32) - (applied_hunk.old_count as i32);
+                    adjusted_hunk.old_start = (adjusted_hunk.old_start as i32 + delta) as u32;
                 }
             }
 
-            let new_line_count = all_lines.len() as u32;
-
-            adjusted.push(Hunk {
-                id: file_hunks[0].id,
-                file_path: file_path_buf,
-                old_start: 0,
-                old_count: 0,
-                new_start: 1,
-                new_count: new_line_count,
-                lines: all_lines,
-                likely_source_commits: file_hunks[0].likely_source_commits.clone(),
-                old_missing_newline_at_eof: false,
-                new_missing_newline_at_eof: file_hunks
-                    .last()
-                    .map(|h| h.new_missing_newline_at_eof)
-                    .unwrap_or(false),
-            });
-        } else {
-            // File existed at HEAD or has been created - adjust hunks based on previously applied changes
-            let applied = applied_hunks_per_file
-                .get(&file_path_buf)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]);
-
-            for hunk in file_hunks {
-                let mut adjusted_hunk = (*hunk).clone();
-
-                // Adjust old_start based on all previously applied hunks that came before this one
-                for applied_hunk in applied {
-                    if applied_hunk.old_start < hunk.old_start {
-                        let delta =
-                            (applied_hunk.new_count as i32) - (applied_hunk.old_count as i32);
-                        adjusted_hunk.old_start = (adjusted_hunk.old_start as i32 + delta) as u32;
-                    }
-                }
-
-                adjusted.push(adjusted_hunk);
-            }
+            adjusted.push(adjusted_hunk);
         }
     }
 
-    Ok(adjusted)
+    adjusted
+}
+
+/// Apply mode-only patches (files with mode changes but no content hunks).
+///
+/// This generates a minimal patch for each mode change and applies it via git apply.
+fn apply_mode_only_patches<G: GitOps>(
+    git: &G,
+    mode_changes: &[&ModeChange],
+) -> Result<(), ExecutionError> {
+    use crate::git::GitError;
+    use std::io::Write;
+
+    for mode_change in mode_changes {
+        let path_str = mode_change.file_path.to_string_lossy();
+
+        // Generate a mode-only patch
+        let patch = format!(
+            "diff --git a/{path} b/{path}\nold mode {old}\nnew mode {new}\n",
+            path = path_str,
+            old = mode_change.old_mode,
+            new = mode_change.new_mode
+        );
+
+        // Write to temp file and apply
+        let mut temp_file = tempfile::NamedTempFile::new().map_err(GitError::ExecutionFailed)?;
+        temp_file
+            .write_all(patch.as_bytes())
+            .map_err(GitError::ExecutionFailed)?;
+        temp_file.flush().map_err(GitError::ExecutionFailed)?;
+
+        git.run_git_output(&["apply", "--cached", temp_file.path().to_str().unwrap()])?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
