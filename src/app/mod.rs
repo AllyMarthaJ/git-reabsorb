@@ -135,6 +135,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             Command::Reset => self.handle_reset(),
             Command::Apply(opts) => self.handle_apply(opts),
             Command::Plan(opts) => self.handle_plan(opts),
+            Command::Status => self.handle_status(),
         }
     }
 
@@ -200,17 +201,26 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         let hunks = plan.get_working_tree_hunks();
         let new_files_to_commits = plan.get_new_files_to_commits();
+        let binary_files = plan.get_binary_files();
+        let mode_changes = plan.get_mode_changes();
         let planned_commits = plan.to_planned_commits();
         print_planned_commits(
             &planned_commits[plan.next_commit_index..],
             plan.next_commit_index,
         );
 
+        // Note: file_modes aren't stored in saved plans, so we use an empty map on resume.
+        // Mode changes for files with content are handled via mode_changes list.
+        let file_modes = std::collections::HashMap::new();
+
         let executor = PlanExecutor::new(&self.git, &self.editor, &self.plan_store);
         if let Err(err) = executor.execute(
             &hunks,
             &planned_commits,
             &new_files_to_commits,
+            &binary_files,
+            &mode_changes,
+            &file_modes,
             opts.no_verify,
             opts.no_editor,
             &mut plan,
@@ -283,18 +293,30 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         // Get the diff between base and head BEFORE resetting
         // This ensures we capture new files that would become untracked after reset
         let diff_output = self.git.diff_trees(&range.base, &range.head)?;
-        let hunks = planner.parse_diff_with_commit_mapping(&diff_output, &file_to_commits)?;
+        let (hunks, binary_files, mode_changes, file_modes) =
+            planner.parse_diff_full_with_commit_mapping(&diff_output, &file_to_commits)?;
         println!("Parsed {} hunks", hunks.len());
+        if !binary_files.is_empty() {
+            println!("Found {} binary files", binary_files.len());
+        }
+        if !mode_changes.is_empty() {
+            println!("Found {} mode changes", mode_changes.len());
+        }
+        if !file_modes.is_empty() {
+            println!("Found {} files with mode info", file_modes.len());
+        }
 
         println!("Resetting to {}...", short_sha(&range.base));
         self.git.reset_to(&range.base)?;
 
-        let plan = planner.draft_plan(
+        let plan = planner.draft_plan_with_extra_changes(
             opts.strategy,
             &source_commits,
             &hunks,
             &file_to_commits,
             &new_files_to_commits,
+            &binary_files,
+            &mode_changes,
         )?;
         println!("Strategy: {}", plan.strategy_name);
         print_planned_commits(&plan.planned_commits, 0);
@@ -307,6 +329,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.hunks,
             &plan.file_to_commits,
             &plan.new_files_to_commits,
+            &plan.binary_files,
+            &plan.mode_changes,
         );
         self.plan_store.save(&saved_plan)?;
 
@@ -325,6 +349,9 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.hunks,
             &plan.planned_commits,
             &plan.new_files_to_commits,
+            &plan.binary_files,
+            &plan.mode_changes,
+            &file_modes,
             opts.no_verify,
             opts.no_editor,
             &mut saved_plan,
