@@ -331,7 +331,6 @@ impl DependencyGraph {
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::HunkAnalysis;
     use super::*;
     use crate::models::HunkId;
 
@@ -342,17 +341,6 @@ mod tests {
             long_message: format!("Long message for commit {}", id),
             hunk_ids: hunk_ids.into_iter().map(HunkId).collect(),
             depends_on: depends_on.into_iter().map(ClusterId).collect(),
-        }
-    }
-
-    fn make_analysis_for(hunk_id: usize, category: ChangeCategory) -> HunkAnalysis {
-        HunkAnalysis {
-            hunk_id,
-            category,
-            semantic_units: vec!["test".to_string()],
-            topic: "test".to_string(),
-            depends_on_context: None,
-            file_path: "test.rs".to_string(),
         }
     }
 
