@@ -31,10 +31,12 @@
 //! ```
 
 pub mod app;
+pub mod assessment;
 pub mod cli;
 pub mod diff_parser;
 pub mod editor;
 pub mod git;
+pub mod llm;
 pub mod models;
 pub mod patch;
 pub mod plan_store;
