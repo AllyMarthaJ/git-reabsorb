@@ -3,12 +3,17 @@ use clap::Parser;
 use git_reabsorb::app::{App, StrategyFactory};
 use git_reabsorb::cli::{Cli, Command};
 use git_reabsorb::editor::SystemEditor;
+use git_reabsorb::features::Features;
 use git_reabsorb::git::{Git, GitOps};
 use git_reabsorb::llm::{LlmConfig, LlmProvider};
 use git_reabsorb::plan_store::FilePlanStore;
 
 fn main() {
     let cli = Cli::parse();
+
+    // Initialize feature flags from environment, then apply CLI overrides
+    let features = Features::from_env().with_overrides(cli.features.as_deref());
+    Features::init_global(features);
 
     // Build LLM config from environment, then apply CLI overrides
     let provider = cli

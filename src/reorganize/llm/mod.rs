@@ -15,6 +15,7 @@ pub use types::{ChangeSpec, LlmPlan};
 
 use std::path::PathBuf;
 
+use crate::features::Feature;
 use crate::llm::{LlmClient, LlmError};
 use crate::models::{
     CommitDescription, DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, SourceCommit,
@@ -61,22 +62,29 @@ impl LlmReorganizer {
                             Ok(()) => return Ok(plan),
                             Err((err, Some(issue))) => {
                                 eprintln!("Validation error: {}", err);
-                                // Try smart fix
-                                match self.try_fix_issue(&context, &mut plan, issue, hunks) {
-                                    Ok(()) => {
-                                        // Re-validate after fix
-                                        match parser::validate_plan(&plan, hunks) {
-                                            Ok(()) => return Ok(plan),
-                                            Err(e) => {
-                                                eprintln!("Fix didn't resolve all issues: {}", e);
-                                                last_error = Some(e);
+                                // Try smart fix if feature is enabled
+                                if Feature::AttemptValidationFix.is_enabled() {
+                                    match self.try_fix_issue(&context, &mut plan, issue, hunks) {
+                                        Ok(()) => {
+                                            // Re-validate after fix
+                                            match parser::validate_plan(&plan, hunks) {
+                                                Ok(()) => return Ok(plan),
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "Fix didn't resolve all issues: {}",
+                                                        e
+                                                    );
+                                                    last_error = Some(e);
+                                                }
                                             }
                                         }
+                                        Err(e) => {
+                                            eprintln!("Fix attempt failed: {}", e);
+                                            last_error = Some(e);
+                                        }
                                     }
-                                    Err(e) => {
-                                        eprintln!("Fix attempt failed: {}", e);
-                                        last_error = Some(e);
-                                    }
+                                } else {
+                                    last_error = Some(err);
                                 }
                             }
                             Err((err, None)) => {

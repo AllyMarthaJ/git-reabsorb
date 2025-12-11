@@ -14,6 +14,17 @@ pub struct Cli {
     #[command(flatten)]
     pub default_plan: PlanArgs,
 
+    /// Enable experimental features (comma-separated)
+    /// Available: attempt-validation-fix
+    /// Can also be set via GIT_REABSORB_FEATURES env var
+    #[arg(
+        long = "features",
+        global = true,
+        value_delimiter = ',',
+        env = "GIT_REABSORB_FEATURES"
+    )]
+    pub features: Option<Vec<String>>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
