@@ -5,7 +5,8 @@ use std::collections::HashSet;
 use crate::models::Hunk;
 use crate::utils::{extract_json_str, truncate};
 
-use super::types::{ChangeSpec, LlmError, LlmPlan};
+use super::types::{ChangeSpec, LlmPlan};
+use crate::llm::LlmError;
 
 pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
     let json_str = match extract_json_str(response) {
@@ -37,7 +38,7 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
             match change {
                 ChangeSpec::Hunk { id } => {
                     if !valid_hunk_ids.contains(id) {
-                        return Err(LlmError::InvalidHunkId(*id));
+                        return Err(LlmError::InvalidId(*id));
                     }
                     if !assigned_hunks.insert(*id) {
                         return Err(LlmError::ValidationError(format!(
@@ -48,7 +49,7 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
                 }
                 ChangeSpec::Partial { hunk_id, lines } => {
                     if !valid_hunk_ids.contains(hunk_id) {
-                        return Err(LlmError::InvalidHunkId(*hunk_id));
+                        return Err(LlmError::InvalidId(*hunk_id));
                     }
                     if lines.is_empty() {
                         return Err(LlmError::ValidationError(format!(
@@ -60,9 +61,9 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
                     let max_line = hunk.lines.len();
                     for &line in lines {
                         if line == 0 || line > max_line {
-                            return Err(LlmError::InvalidLineIndex {
-                                hunk_id: *hunk_id,
-                                line,
+                            return Err(LlmError::InvalidIndex {
+                                item_id: *hunk_id,
+                                index: line,
                             });
                         }
                     }
@@ -171,7 +172,7 @@ That's it!"#;
         };
 
         let result = validate_plan(&plan, &hunks);
-        assert!(matches!(result, Err(LlmError::InvalidHunkId(999))));
+        assert!(matches!(result, Err(LlmError::InvalidId(999))));
     }
 
     #[test]

@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::llm::LlmClient;
 use crate::models::{Hunk, HunkId, SourceCommit};
-use crate::reorganize::llm::LlmClient;
 use crate::utils::{extract_json_str, format_diff_lines};
 
 use super::types::{AnalysisResults, HierarchicalError, HunkAnalysis, HunkAnalysisResponse};
