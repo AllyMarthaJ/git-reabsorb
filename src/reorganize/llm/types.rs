@@ -60,28 +60,3 @@ pub enum ChangeSpec {
 pub struct LlmPlan {
     pub commits: Vec<LlmCommit>,
 }
-
-/// Errors from LLM operations
-#[derive(Debug, thiserror::Error)]
-pub enum LlmError {
-    #[error("LLM client error: {0}")]
-    ClientError(String),
-
-    #[error("Failed to parse LLM response as JSON: {0}")]
-    ParseError(String),
-
-    #[error("Invalid hunk ID {0}: not found in input")]
-    InvalidHunkId(usize),
-
-    #[error("Invalid line index {line} for hunk {hunk_id}: out of range")]
-    InvalidLineIndex { hunk_id: usize, line: usize },
-
-    #[error("Validation error: {0}")]
-    ValidationError(String),
-
-    #[error("Max retries ({0}) exceeded")]
-    MaxRetriesExceeded(usize),
-
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-}

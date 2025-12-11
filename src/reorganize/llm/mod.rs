@@ -1,15 +1,21 @@
 //! LLM-based reorganization strategy
+//!
+//! This module contains reorganization-specific LLM code:
+//! - Prompt construction for commit planning
+//! - Response parsing and validation
+//! - The `LlmReorganizer` strategy
+//!
+//! Generic LLM infrastructure lives in `crate::llm`.
 
-mod client;
 mod parser;
 mod prompt;
 mod types;
 
-pub use client::{ClaudeCliClient, LlmClient};
-pub use types::{ChangeSpec, LlmError, LlmPlan};
+pub use types::{ChangeSpec, LlmPlan};
 
 use std::path::PathBuf;
 
+use crate::llm::{LlmClient, LlmError};
 use crate::models::{DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
