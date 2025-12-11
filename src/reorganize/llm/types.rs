@@ -89,6 +89,7 @@ pub enum HunkAssignment {
 /// Response for fixing duplicate hunk assignments
 #[derive(Debug, Clone, Deserialize)]
 pub struct FixDuplicateResponse {
+    #[allow(dead_code)]
     pub hunk_id: usize,
     pub chosen_commit_index: usize,
 }
