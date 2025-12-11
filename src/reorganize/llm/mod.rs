@@ -16,8 +16,14 @@ pub use types::{ChangeSpec, LlmPlan};
 use std::path::PathBuf;
 
 use crate::llm::{LlmClient, LlmError};
-use crate::models::{DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, SourceCommit};
+use crate::models::{
+    CommitDescription, DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, SourceCommit,
+};
 use crate::reorganize::{ReorganizeError, Reorganizer};
+use crate::utils::extract_json_str;
+
+use parser::ValidationIssue;
+use types::{FixDuplicateResponse, FixUnassignedResponse, HunkAssignment, LlmCommit, LlmContext};
 
 pub struct LlmReorganizer {
     client: Box<dyn LlmClient>,
@@ -42,20 +48,43 @@ impl LlmReorganizer {
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
     ) -> Result<LlmPlan, LlmError> {
-        let prompt_text = prompt::build_prompt(&prompt::build_context(source_commits, hunks));
+        let context = prompt::build_context(source_commits, hunks);
+        let prompt_text = prompt::build_prompt(&context);
         let mut last_error = None;
 
         for attempt in 1..=self.max_retries {
             eprintln!("LLM attempt {}/{}...", attempt, self.max_retries);
             match self.client.complete(&prompt_text) {
                 Ok(response) => match parser::extract_json(&response) {
-                    Ok(plan) => match parser::validate_plan(&plan, hunks) {
-                        Ok(()) => return Ok(plan),
-                        Err(e) => {
-                            eprintln!("Validation error: {}", e);
-                            last_error = Some(e);
+                    Ok(mut plan) => {
+                        match parser::validate_plan_with_issues(&plan, hunks) {
+                            Ok(()) => return Ok(plan),
+                            Err((err, Some(issue))) => {
+                                eprintln!("Validation error: {}", err);
+                                // Try smart fix
+                                match self.try_fix_issue(&context, &mut plan, issue, hunks) {
+                                    Ok(()) => {
+                                        // Re-validate after fix
+                                        match parser::validate_plan(&plan, hunks) {
+                                            Ok(()) => return Ok(plan),
+                                            Err(e) => {
+                                                eprintln!("Fix didn't resolve all issues: {}", e);
+                                                last_error = Some(e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Fix attempt failed: {}", e);
+                                        last_error = Some(e);
+                                    }
+                                }
+                            }
+                            Err((err, None)) => {
+                                eprintln!("Validation error: {}", err);
+                                last_error = Some(err);
+                            }
                         }
-                    },
+                    }
                     Err(e) => {
                         eprintln!("Parse error: {}", e);
                         last_error = Some(e);
@@ -68,6 +97,128 @@ impl LlmReorganizer {
             }
         }
         Err(last_error.unwrap_or(LlmError::MaxRetriesExceeded(self.max_retries)))
+    }
+
+    /// Try to fix a specific validation issue with a targeted prompt
+    fn try_fix_issue(
+        &self,
+        context: &LlmContext,
+        plan: &mut LlmPlan,
+        issue: ValidationIssue,
+        hunks: &[Hunk],
+    ) -> Result<(), LlmError> {
+        match issue {
+            ValidationIssue::UnassignedHunks(unassigned_ids) => {
+                eprintln!(
+                    "Attempting to fix {} unassigned hunks...",
+                    unassigned_ids.len()
+                );
+                let fix_prompt =
+                    prompt::build_fix_unassigned_prompt(context, plan, &unassigned_ids);
+                let response = self.client.complete(&fix_prompt)?;
+
+                let json_str = extract_json_str(&response)
+                    .ok_or_else(|| LlmError::ParseError("No JSON in fix response".to_string()))?;
+
+                let fix: FixUnassignedResponse = serde_json::from_str(json_str).map_err(|e| {
+                    LlmError::ParseError(format!("Failed to parse fix response: {}", e))
+                })?;
+
+                self.apply_unassigned_fix(plan, fix, hunks)?;
+                Ok(())
+            }
+            ValidationIssue::DuplicateHunk {
+                hunk_id,
+                commit_indices,
+            } => {
+                eprintln!("Attempting to fix duplicate hunk {}...", hunk_id);
+                let fix_prompt =
+                    prompt::build_fix_duplicate_prompt(context, plan, hunk_id, &commit_indices);
+                let response = self.client.complete(&fix_prompt)?;
+
+                let json_str = extract_json_str(&response)
+                    .ok_or_else(|| LlmError::ParseError("No JSON in fix response".to_string()))?;
+
+                let fix: FixDuplicateResponse = serde_json::from_str(json_str).map_err(|e| {
+                    LlmError::ParseError(format!("Failed to parse fix response: {}", e))
+                })?;
+
+                self.apply_duplicate_fix(plan, hunk_id, fix.chosen_commit_index)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Apply a fix for unassigned hunks
+    fn apply_unassigned_fix(
+        &self,
+        plan: &mut LlmPlan,
+        fix: FixUnassignedResponse,
+        _hunks: &[Hunk],
+    ) -> Result<(), LlmError> {
+        for assignment in fix.assignments {
+            match assignment {
+                HunkAssignment::AddToExisting {
+                    hunk_id,
+                    commit_description,
+                } => {
+                    // Find the commit by description and add the hunk
+                    let commit = plan
+                        .commits
+                        .iter_mut()
+                        .find(|c| c.description.short == commit_description)
+                        .ok_or_else(|| {
+                            LlmError::ValidationError(format!(
+                                "Commit '{}' not found in plan",
+                                commit_description
+                            ))
+                        })?;
+                    commit.changes.push(ChangeSpec::Hunk { id: hunk_id });
+                    eprintln!(
+                        "  Added hunk {} to commit '{}'",
+                        hunk_id, commit_description
+                    );
+                }
+                HunkAssignment::NewCommit {
+                    hunk_id,
+                    short_description,
+                    long_description,
+                } => {
+                    // Create a new commit
+                    plan.commits.push(LlmCommit {
+                        description: CommitDescription::new(&short_description, &long_description),
+                        changes: vec![ChangeSpec::Hunk { id: hunk_id }],
+                    });
+                    eprintln!(
+                        "  Created new commit '{}' for hunk {}",
+                        short_description, hunk_id
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply a fix for duplicate hunk assignment
+    fn apply_duplicate_fix(
+        &self,
+        plan: &mut LlmPlan,
+        hunk_id: usize,
+        chosen_commit_index: usize,
+    ) -> Result<(), LlmError> {
+        // Remove the hunk from all commits except the chosen one
+        for (idx, commit) in plan.commits.iter_mut().enumerate() {
+            if idx != chosen_commit_index {
+                commit
+                    .changes
+                    .retain(|change| !matches!(change, ChangeSpec::Hunk { id } if *id == hunk_id));
+            }
+        }
+        eprintln!(
+            "  Kept hunk {} only in commit {}",
+            hunk_id, chosen_commit_index
+        );
+        Ok(())
     }
 
     fn plan_to_commits(

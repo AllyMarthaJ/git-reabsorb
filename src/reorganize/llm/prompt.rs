@@ -3,7 +3,7 @@
 use crate::models::{Hunk, SourceCommit};
 use crate::utils::format_diff_lines;
 
-use super::types::{CommitContext, HunkContext, LlmContext};
+use super::types::{CommitContext, HunkContext, LlmContext, LlmPlan};
 
 pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmContext {
     let commit_contexts: Vec<CommitContext> = source_commits
@@ -131,6 +131,138 @@ Analyze the hunks above and reorganize them into logical commits. Output ONLY va
 ```json
 "#,
     );
+
+    prompt
+}
+
+/// Build a prompt to fix unassigned hunks by adding them to existing or new commits
+pub fn build_fix_unassigned_prompt(
+    context: &LlmContext,
+    current_plan: &LlmPlan,
+    unassigned_hunk_ids: &[usize],
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(
+        r#"You previously created a commit plan, but some hunks were not assigned to any commit.
+Please assign the missing hunks to existing commits or create new commits for them.
+
+## Current Plan
+
+```json
+"#,
+    );
+
+    // Serialize current plan
+    if let Ok(json) = serde_json::to_string_pretty(current_plan) {
+        prompt.push_str(&json);
+    }
+
+    prompt.push_str("\n```\n\n## Unassigned Hunks\n\n");
+
+    // Show details of unassigned hunks
+    for hunk_id in unassigned_hunk_ids {
+        if let Some(hunk) = context.hunks.iter().find(|h| h.id == *hunk_id) {
+            prompt.push_str(&format!("### Hunk {} - {}\n", hunk.id, hunk.file_path));
+            if let Some(ref sha) = hunk.source_commit_sha {
+                let commit_msg = context
+                    .source_commits
+                    .iter()
+                    .find(|c| c.sha.starts_with(sha) || sha.starts_with(&c.sha))
+                    .map(|c| c.message.as_str())
+                    .unwrap_or("(unknown)");
+                prompt.push_str(&format!(
+                    "Original commit: {} - {}\n",
+                    &sha[..8.min(sha.len())],
+                    commit_msg.lines().next().unwrap_or("(no message)")
+                ));
+            }
+            prompt.push_str(&format!(
+                "Lines: old @{}, new @{}\n```diff\n{}\n```\n\n",
+                hunk.old_start, hunk.new_start, hunk.diff_content
+            ));
+        }
+    }
+
+    prompt.push_str(
+        r#"## Your Task
+
+For each unassigned hunk, decide:
+1. Add it to an existing commit (specify the commit's short_description)
+2. Create a new commit for it
+
+Output a JSON object with the assignments:
+
+```json
+{
+  "assignments": [
+    {"hunk_id": N, "action": "add_to_existing", "commit_description": "existing commit short description"},
+    {"hunk_id": M, "action": "new_commit", "short_description": "New commit message", "long_description": "Details"}
+  ]
+}
+```
+
+Output ONLY the JSON.
+
+```json
+"#,
+    );
+
+    prompt
+}
+
+/// Build a prompt to resolve a duplicate hunk assignment
+pub fn build_fix_duplicate_prompt(
+    context: &LlmContext,
+    current_plan: &LlmPlan,
+    hunk_id: usize,
+    commit_indices: &[usize],
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(&format!(
+        r#"You previously created a commit plan, but hunk {} was assigned to multiple commits.
+Please choose which single commit should contain this hunk.
+
+## The Conflicting Hunk
+
+"#,
+        hunk_id
+    ));
+
+    // Show the hunk
+    if let Some(hunk) = context.hunks.iter().find(|h| h.id == hunk_id) {
+        prompt.push_str(&format!("### Hunk {} - {}\n", hunk.id, hunk.file_path));
+        prompt.push_str(&format!("```diff\n{}\n```\n\n", hunk.diff_content));
+    }
+
+    prompt.push_str("## Commits That Claim This Hunk\n\n");
+
+    for &idx in commit_indices {
+        if let Some(commit) = current_plan.commits.get(idx) {
+            prompt.push_str(&format!(
+                "### Commit {} - \"{}\"\n{}\n\n",
+                idx, commit.description.short, commit.description.long
+            ));
+        }
+    }
+
+    prompt.push_str(&format!(
+        r#"## Your Task
+
+Choose which commit should own hunk {}. Output a JSON object:
+
+```json
+{{"hunk_id": {}, "chosen_commit_index": N}}
+```
+
+Where N is the index (0-based) of the commit that should contain this hunk.
+Output ONLY the JSON.
+
+```json
+"#,
+        hunk_id, hunk_id
+    ));
 
     prompt
 }
