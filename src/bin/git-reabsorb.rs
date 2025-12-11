@@ -4,18 +4,38 @@ use git_reabsorb::app::{App, StrategyFactory};
 use git_reabsorb::cli::{Cli, Command};
 use git_reabsorb::editor::SystemEditor;
 use git_reabsorb::git::{Git, GitOps};
+use git_reabsorb::llm::{LlmConfig, LlmProvider};
 use git_reabsorb::plan_store::FilePlanStore;
 
 fn main() {
     let cli = Cli::parse();
 
+    // Build LLM config from environment, then apply CLI overrides
+    let provider = cli
+        .llm
+        .provider
+        .as_ref()
+        .and_then(|s| s.parse::<LlmProvider>().ok());
+    let llm_config = LlmConfig::from_env().with_overrides(
+        provider,
+        cli.llm.model.clone(),
+        cli.llm.opencode_backend.clone(),
+    );
+
     let git = Git::new();
     let editor = SystemEditor::new();
     let namespace = determine_namespace(&git);
     let plan_store = FilePlanStore::new(namespace.clone());
-    let strategies = StrategyFactory::new();
+    let strategies = StrategyFactory::new().with_llm_config(llm_config.clone());
 
-    let mut app = App::new(git, editor, plan_store, strategies, namespace.clone());
+    let mut app = App::new(
+        git,
+        editor,
+        plan_store,
+        strategies,
+        llm_config,
+        namespace.clone(),
+    );
     let command = cli
         .command
         .unwrap_or(Command::Plan(cli.default_plan.clone()));
