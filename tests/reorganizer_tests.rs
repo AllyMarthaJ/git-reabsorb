@@ -1445,7 +1445,7 @@ fn test_apply_hunks_from_multiple_files() {
 // ============================================================================
 
 use git_reabsorb::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit};
-use git_reabsorb::reorganize::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
+use git_reabsorb::plan_store::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
 
 const TEST_REF_NAMESPACE: &str = "test-branch";
 
@@ -2034,7 +2034,9 @@ impl Calculator {
 
     // Get hunks from working tree
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[original_head.clone()], 0).unwrap();
+    let hunks =
+        git_reabsorb::diff_parser::parse_diff(&diff, std::slice::from_ref(&original_head), 0)
+            .unwrap();
 
     // The hunks should reference the original commit
     for hunk in &hunks {
@@ -2164,7 +2166,7 @@ fn test_diff_trees_produces_parseable_hunks_for_new_files() {
     let diff_output = repo.git.diff_trees(&base, &head).unwrap();
 
     // Parse hunks from the diff
-    let hunks = parse_diff(&diff_output, &[head.clone()], 0).unwrap();
+    let hunks = parse_diff(&diff_output, std::slice::from_ref(&head), 0).unwrap();
 
     // Should have hunks for both new files
     let github_hunks: Vec<_> = hunks
@@ -2278,7 +2280,7 @@ fn test_squash_with_file_deletions() {
     // Check actual file content in index
     let output = std::process::Command::new("git")
         .current_dir(&repo.path)
-        .args(&["show", &format!("HEAD:delete1.txt")])
+        .args(["show", "HEAD:delete1.txt"])
         .output()
         .unwrap();
     let content = output.stdout;
@@ -2313,7 +2315,7 @@ fn test_squash_with_file_deletions() {
     let status_output = String::from_utf8(
         Command::new("git")
             .current_dir(&repo.path)
-            .args(&["status", "--porcelain"])
+            .args(["status", "--porcelain"])
             .output()
             .unwrap()
             .stdout,
@@ -2468,7 +2470,7 @@ fn test_reorder_commits_creating_new_file_from_modifications() {
     // When we apply, we need to create it as a new file
 
     // Create a new file hunk
-    let file_hunk_refs: Vec<&Hunk> = file_hunks.iter().copied().collect();
+    let file_hunk_refs: Vec<&Hunk> = file_hunks.to_vec();
     let new_file_hunk = git_reabsorb::patch::PatchWriter::create_new_file_hunk(
         &PathBuf::from("file.txt"),
         &file_hunk_refs,
