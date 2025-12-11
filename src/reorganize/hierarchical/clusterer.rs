@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::llm::LlmClient;
 use crate::models::{Hunk, HunkId};
-use crate::reorganize::llm::LlmClient;
 
 use super::types::{
     AnalysisResults, ChangeCategory, Cluster, ClusterFormationReason, ClusterId, HierarchicalError,

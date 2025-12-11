@@ -41,8 +41,8 @@ pub use validator::{assign_orphans, to_planned_commits, Validator};
 
 use std::sync::Arc;
 
+use crate::llm::LlmClient;
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
-use crate::reorganize::llm::LlmClient;
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
 /// Configuration for the hierarchical reorganizer

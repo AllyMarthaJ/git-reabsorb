@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::llm::LlmClient;
 use crate::models::{CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit};
-use crate::reorganize::llm::LlmClient;
 
 use super::types::{AnalysisResults, ClusterCommit, HierarchicalError};
 

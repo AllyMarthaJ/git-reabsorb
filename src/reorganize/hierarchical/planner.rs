@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::llm::LlmClient;
 use crate::models::{Hunk, HunkId};
-use crate::reorganize::llm::LlmClient;
 
 use super::types::{
     AnalysisResults, Cluster, ClusterCommit, ClusterId, CommitPlanResponse, HierarchicalError,
