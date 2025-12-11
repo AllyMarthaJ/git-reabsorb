@@ -8,6 +8,18 @@ use crate::utils::{extract_json_str, truncate};
 use super::types::{ChangeSpec, LlmPlan};
 use crate::llm::LlmError;
 
+/// Specific validation issues that can be fixed with targeted prompts
+#[derive(Debug, Clone)]
+pub enum ValidationIssue {
+    /// Hunks that weren't assigned to any commit
+    UnassignedHunks(Vec<usize>),
+    /// A hunk assigned to multiple commits (hunk_id, commit indices)
+    DuplicateHunk {
+        hunk_id: usize,
+        commit_indices: Vec<usize>,
+    },
+}
+
 pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
     let json_str = match extract_json_str(response) {
         Some(json) => json.trim(),
@@ -94,6 +106,110 @@ pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
             unassigned.len(),
             unassigned
         )));
+    }
+
+    Ok(())
+}
+
+/// Validate and return specific fixable issues if any
+pub fn validate_plan_with_issues(
+    plan: &LlmPlan,
+    hunks: &[Hunk],
+) -> Result<(), (LlmError, Option<ValidationIssue>)> {
+    let valid_hunk_ids: HashSet<usize> = hunks.iter().map(|h| h.id.0).collect();
+    let mut hunk_to_commits: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+
+    for (commit_idx, commit) in plan.commits.iter().enumerate() {
+        if commit.description.short.is_empty() {
+            return Err((
+                LlmError::ValidationError("Commit has empty short description".to_string()),
+                None,
+            ));
+        }
+
+        for change in &commit.changes {
+            match change {
+                ChangeSpec::Hunk { id } => {
+                    if !valid_hunk_ids.contains(id) {
+                        return Err((LlmError::InvalidId(*id), None));
+                    }
+                    hunk_to_commits.entry(*id).or_default().push(commit_idx);
+                }
+                ChangeSpec::Partial { hunk_id, lines } => {
+                    if !valid_hunk_ids.contains(hunk_id) {
+                        return Err((LlmError::InvalidId(*hunk_id), None));
+                    }
+                    if lines.is_empty() {
+                        return Err((
+                            LlmError::ValidationError(format!(
+                                "Partial hunk {} has no lines",
+                                hunk_id
+                            )),
+                            None,
+                        ));
+                    }
+                    let hunk = hunks.iter().find(|h| h.id.0 == *hunk_id).unwrap();
+                    let max_line = hunk.lines.len();
+                    for &line in lines {
+                        if line == 0 || line > max_line {
+                            return Err((
+                                LlmError::InvalidIndex {
+                                    item_id: *hunk_id,
+                                    index: line,
+                                },
+                                None,
+                            ));
+                        }
+                    }
+                    // Partial hunks don't count as "assigned" for duplicate detection
+                }
+                ChangeSpec::Raw { file_path, diff } => {
+                    if file_path.is_empty() {
+                        return Err((
+                            LlmError::ValidationError("Raw change has empty file_path".to_string()),
+                            None,
+                        ));
+                    }
+                    if diff.is_empty() {
+                        return Err((
+                            LlmError::ValidationError("Raw change has empty diff".to_string()),
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for duplicates
+    for (hunk_id, commits) in &hunk_to_commits {
+        if commits.len() > 1 {
+            return Err((
+                LlmError::ValidationError(format!("Hunk {} assigned to multiple commits", hunk_id)),
+                Some(ValidationIssue::DuplicateHunk {
+                    hunk_id: *hunk_id,
+                    commit_indices: commits.clone(),
+                }),
+            ));
+        }
+    }
+
+    // Check for unassigned
+    let assigned_hunks: HashSet<usize> = hunk_to_commits.keys().copied().collect();
+    let unassigned: Vec<_> = valid_hunk_ids
+        .difference(&assigned_hunks)
+        .copied()
+        .collect();
+    if !unassigned.is_empty() {
+        return Err((
+            LlmError::ValidationError(format!(
+                "{} hunks were not assigned to any commit: {:?}",
+                unassigned.len(),
+                unassigned
+            )),
+            Some(ValidationIssue::UnassignedHunks(unassigned)),
+        ));
     }
 
     Ok(())

@@ -30,7 +30,7 @@ pub struct LlmContext {
 }
 
 /// A commit planned by the LLM
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmCommit {
     #[serde(flatten)]
     pub description: crate::models::CommitDescription,
@@ -38,7 +38,7 @@ pub struct LlmCommit {
 }
 
 /// Specification for a change in a commit
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ChangeSpec {
     /// Use an entire existing hunk
@@ -56,7 +56,39 @@ pub enum ChangeSpec {
 }
 
 /// The complete plan returned by the LLM
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmPlan {
     pub commits: Vec<LlmCommit>,
+}
+
+/// Response for fixing unassigned hunks
+#[derive(Debug, Clone, Deserialize)]
+pub struct FixUnassignedResponse {
+    pub assignments: Vec<HunkAssignment>,
+}
+
+/// A single hunk assignment decision
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "action")]
+pub enum HunkAssignment {
+    /// Add hunk to an existing commit
+    #[serde(rename = "add_to_existing")]
+    AddToExisting {
+        hunk_id: usize,
+        commit_description: String,
+    },
+    /// Create a new commit for this hunk
+    #[serde(rename = "new_commit")]
+    NewCommit {
+        hunk_id: usize,
+        short_description: String,
+        long_description: String,
+    },
+}
+
+/// Response for fixing duplicate hunk assignments
+#[derive(Debug, Clone, Deserialize)]
+pub struct FixDuplicateResponse {
+    pub hunk_id: usize,
+    pub chosen_commit_index: usize,
 }
