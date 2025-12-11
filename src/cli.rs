@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
@@ -7,10 +9,40 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(subcommand_required = false)]
 pub struct Cli {
     #[command(flatten)]
+    pub llm: LlmArgs,
+
+    #[command(flatten)]
     pub default_plan: PlanArgs,
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// Global LLM configuration options.
+#[derive(Args, Debug, Clone, Default)]
+pub struct LlmArgs {
+    /// LLM provider to use (claude, opencode)
+    /// Can also be set via GIT_REABSORB_LLM_PROVIDER env var
+    #[arg(
+        long = "llm-provider",
+        global = true,
+        env = "GIT_REABSORB_LLM_PROVIDER"
+    )]
+    pub provider: Option<String>,
+
+    /// LLM model to use (provider-specific)
+    /// Can also be set via GIT_REABSORB_LLM_MODEL env var
+    #[arg(long = "llm-model", global = true, env = "GIT_REABSORB_LLM_MODEL")]
+    pub model: Option<String>,
+
+    /// Backend for opencode provider (e.g., lmstudio, ollama)
+    /// Can also be set via GIT_REABSORB_OPENCODE_BACKEND env var
+    #[arg(
+        long = "opencode-backend",
+        global = true,
+        env = "GIT_REABSORB_OPENCODE_BACKEND"
+    )]
+    pub opencode_backend: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -23,6 +55,10 @@ pub enum Command {
     Reset,
     /// Show status of current plan (for debugging)
     Status,
+    /// Assess commit quality in a range
+    Assess(AssessArgs),
+    /// Compare two saved assessments
+    Compare(CompareArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -71,6 +107,71 @@ pub struct ApplyArgs {
     /// Use the planned commit messages without opening an editor
     #[arg(long = "no-editor")]
     pub no_editor: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AssessArgs {
+    /// Commit range to assess (default: auto-detect branch base..HEAD)
+    /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456
+    #[arg(value_name = "RANGE")]
+    pub range: Option<String>,
+
+    /// Base branch to assess from
+    #[arg(short, long)]
+    pub base: Option<String>,
+
+    /// Criteria to assess (default: all)
+    /// Options: atomicity, message_quality, logical_cohesion, scope, reversibility
+    #[arg(short, long, value_delimiter = ',')]
+    pub criteria: Option<Vec<String>>,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "pretty")]
+    pub format: OutputFormat,
+
+    /// Save assessment to file (default: .git/reabsorb/assessments/<timestamp>.json)
+    #[arg(long)]
+    pub save: Option<Option<PathBuf>>,
+
+    /// Compare against a previous assessment
+    #[arg(long)]
+    pub compare: Option<PathBuf>,
+
+    /// Verbose output with full rationale
+    #[arg(short, long)]
+    pub verbose: bool,
+
+    /// Maximum parallel commit assessments (default: 4)
+    #[arg(short = 'j', long, default_value = "4")]
+    pub parallel: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CompareArgs {
+    /// Path to the "before" assessment file
+    #[arg(value_name = "BEFORE")]
+    pub before: PathBuf,
+
+    /// Path to the "after" assessment file
+    #[arg(value_name = "AFTER")]
+    pub after: PathBuf,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "pretty")]
+    pub format: OutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Default)]
+pub enum OutputFormat {
+    /// Human-readable formatted output
+    #[default]
+    Pretty,
+    /// JSON output
+    Json,
+    /// Markdown report
+    Markdown,
+    /// Compact single-line per commit
+    Compact,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
