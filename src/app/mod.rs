@@ -1,15 +1,16 @@
 mod executor;
 mod planner;
 
-use std::sync::Arc;
-
-use crate::cli::{ApplyArgs, Command, PlanArgs, StrategyArg};
+use crate::assessment::{self, AssessmentEngine, CriterionId};
+use crate::cli::{
+    ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs, StrategyArg,
+};
 use crate::diff_parser::DiffParseError;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
+use crate::llm::LlmConfig;
 use crate::models::PlannedCommit;
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
-use crate::reorganize::llm::ClaudeCliClient;
 use crate::reorganize::{
     GroupByFile, HierarchicalReorganizer, LlmReorganizer, PreserveOriginal, ReorganizeError,
     Reorganizer, Squash,
@@ -20,12 +21,21 @@ pub use executor::{ExecutionError, PlanExecutor};
 pub use planner::{PlanDraft, Planner};
 
 /// Factory for instantiating reorganizers from CLI strategy argument.
-#[derive(Clone, Copy, Default)]
-pub struct StrategyFactory;
+#[derive(Clone, Default)]
+pub struct StrategyFactory {
+    llm_config: LlmConfig,
+}
 
 impl StrategyFactory {
     pub fn new() -> Self {
-        Self
+        Self {
+            llm_config: LlmConfig::default(),
+        }
+    }
+
+    pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
+        self.llm_config = config;
+        self
     }
 
     pub fn create(&self, strategy: StrategyArg) -> Box<dyn Reorganizer> {
@@ -33,9 +43,11 @@ impl StrategyFactory {
             StrategyArg::Preserve => Box::new(PreserveOriginal),
             StrategyArg::ByFile => Box::new(GroupByFile),
             StrategyArg::Squash => Box::new(Squash),
-            StrategyArg::Llm => Box::new(LlmReorganizer::new(Box::new(ClaudeCliClient::new()))),
+            StrategyArg::Llm => {
+                Box::new(LlmReorganizer::new(self.llm_config.create_boxed_client()))
+            }
             StrategyArg::Hierarchical => {
-                let client = Arc::new(ClaudeCliClient::new());
+                let client = self.llm_config.create_client();
                 Box::new(HierarchicalReorganizer::new(Some(client)))
             }
         }
@@ -96,6 +108,8 @@ pub enum AppError {
     Diff(#[from] DiffParseError),
     #[error(transparent)]
     Execution(#[from] ExecutionError),
+    #[error(transparent)]
+    Assessment(#[from] assessment::AssessmentError),
     #[error("Integrity check failed: {0}")]
     Integrity(String),
     #[error("{0}")]
@@ -107,6 +121,7 @@ pub struct App<G: GitOps, E: Editor, P: PlanStore> {
     editor: E,
     plan_store: P,
     strategies: StrategyFactory,
+    llm_config: LlmConfig,
     namespace: String,
     pre_reabsorb_ref: String,
 }
@@ -117,6 +132,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         editor: E,
         plan_store: P,
         strategies: StrategyFactory,
+        llm_config: LlmConfig,
         namespace: String,
     ) -> Self {
         let pre_reabsorb_ref = crate::git::pre_reabsorb_ref_for(&namespace);
@@ -125,6 +141,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             editor,
             plan_store,
             strategies,
+            llm_config,
             namespace,
             pre_reabsorb_ref,
         }
@@ -136,6 +153,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             Command::Apply(opts) => self.handle_apply(opts),
             Command::Plan(opts) => self.handle_plan(opts),
             Command::Status => self.handle_status(),
+            Command::Assess(opts) => self.handle_assess(opts),
+            Command::Compare(opts) => self.handle_compare(opts),
         }
     }
 
@@ -181,7 +200,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 plan.commits.len()
             );
         } else if plan.next_commit_index > 0 {
-            let plan_path = crate::reorganize::plan_file::plan_file_path(&self.namespace);
+            let plan_path = crate::plan_store::plan_file_path(&self.namespace);
             return Err(AppError::User(format!(
                 "Plan has {} commits already applied. Use 'git reabsorb apply --resume' to continue, or delete {}",
                 plan.next_commit_index,
@@ -243,7 +262,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
     fn handle_plan(&mut self, opts: PlanArgs) -> Result<(), AppError> {
         if self.plan_store.exists() {
-            let plan_path = crate::reorganize::plan_file::plan_file_path(&self.namespace);
+            let plan_path = crate::plan_store::plan_file_path(&self.namespace);
             eprintln!(
                 "Warning: A saved plan exists. Use 'git reabsorb apply' or delete {}\n",
                 plan_path.display()
@@ -264,7 +283,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             );
         }
 
-        let planner = Planner::new(&self.git, self.strategies);
+        let planner = Planner::new(&self.git, self.strategies.clone());
         let source_commits = planner.read_source_commits(&range.base, &range.head)?;
         println!("Found {} commits", source_commits.len());
 
@@ -337,7 +356,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         if opts.save_plan {
             println!(
                 "Plan saved to {}",
-                crate::reorganize::plan_file::plan_file_path(&self.namespace).display()
+                crate::plan_store::plan_file_path(&self.namespace).display()
             );
             println!("\nTo apply: git reabsorb apply");
             println!("To undo reset: git reabsorb reset");
@@ -492,6 +511,88 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         Ok(())
     }
+
+    fn handle_assess(&mut self, opts: AssessArgs) -> Result<(), AppError> {
+        // Resolve commit range
+        let range = resolve_range(&self.git, opts.range.as_deref(), opts.base.as_deref())?;
+
+        eprintln!(
+            "Assessing commits {}..{}",
+            short_sha(&range.base),
+            short_sha(&range.head)
+        );
+
+        // Read commits
+        let commits = self.git.read_commits(&range.base, &range.head)?;
+        if commits.is_empty() {
+            return Err(AppError::User("No commits found in range".to_string()));
+        }
+
+        eprintln!("Found {} commits to assess", commits.len());
+
+        // Parse criteria from args or use all
+        let criterion_ids = match &opts.criteria {
+            Some(names) => {
+                let mut ids = Vec::new();
+                for name in names {
+                    let id: CriterionId = name.parse().map_err(AppError::User)?;
+                    ids.push(id);
+                }
+                ids
+            }
+            None => CriterionId::all().to_vec(),
+        };
+
+        // Create assessment engine with parallelism
+        let client = self.llm_config.create_client();
+        let engine = AssessmentEngine::new(client, &criterion_ids).with_parallelism(opts.parallel);
+
+        // Run assessment
+        let result = engine.assess_range(&self.git, &range.base, &range.head, &commits)?;
+
+        // Handle comparison if requested
+        if let Some(compare_path) = &opts.compare {
+            let previous = assessment::load_assessment(compare_path)
+                .map_err(|e| AppError::User(format!("Failed to load comparison: {}", e)))?;
+
+            let comparison = assessment::compare_assessments(previous, result.clone());
+            let output =
+                assessment::report::format_comparison(&comparison, convert_format(opts.format));
+            println!("{}", output);
+        } else {
+            // Format and print assessment
+            let output = assessment::report::format_assessment(
+                &result,
+                convert_format(opts.format),
+                opts.verbose,
+            );
+            println!("{}", output);
+        }
+
+        // Save if requested
+        if let Some(save_path) = opts.save {
+            let path = assessment::save_assessment(&result, save_path.as_deref())
+                .map_err(|e| AppError::User(format!("Failed to save assessment: {}", e)))?;
+            eprintln!("Assessment saved to: {}", path.display());
+        }
+
+        Ok(())
+    }
+
+    fn handle_compare(&self, opts: CompareArgs) -> Result<(), AppError> {
+        let before = assessment::load_assessment(&opts.before)
+            .map_err(|e| AppError::User(format!("Failed to load 'before' assessment: {}", e)))?;
+
+        let after = assessment::load_assessment(&opts.after)
+            .map_err(|e| AppError::User(format!("Failed to load 'after' assessment: {}", e)))?;
+
+        let comparison = assessment::compare_assessments(before, after);
+        let output =
+            assessment::report::format_comparison(&comparison, convert_format(opts.format));
+        println!("{}", output);
+
+        Ok(())
+    }
 }
 
 fn print_planned_commits(commits: &[PlannedCommit], offset: usize) {
@@ -505,4 +606,13 @@ fn print_planned_commits(commits: &[PlannedCommit], offset: usize) {
         );
     }
     println!();
+}
+
+fn convert_format(format: OutputFormat) -> assessment::report::OutputFormat {
+    match format {
+        OutputFormat::Pretty => assessment::report::OutputFormat::Pretty,
+        OutputFormat::Json => assessment::report::OutputFormat::Json,
+        OutputFormat::Markdown => assessment::report::OutputFormat::Markdown,
+        OutputFormat::Compact => assessment::report::OutputFormat::Compact,
+    }
 }
