@@ -25,6 +25,14 @@ pub struct Cli {
     )]
     pub features: Option<Vec<String>>,
 
+    /// Increase verbosity (-v for debug, -vv for trace)
+    #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
+    pub verbosity: u8,
+
+    /// Suppress informational output (errors only)
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -148,9 +156,9 @@ pub struct AssessArgs {
     #[arg(long)]
     pub compare: Option<PathBuf>,
 
-    /// Verbose output with full rationale
-    #[arg(short, long)]
-    pub verbose: bool,
+    /// Show full rationale and evidence in output
+    #[arg(long)]
+    pub full: bool,
 
     /// Maximum parallel commit assessments (default: 4)
     #[arg(short = 'j', long, default_value = "4")]
