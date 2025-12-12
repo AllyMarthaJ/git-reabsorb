@@ -9,6 +9,8 @@ use std::env;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+use log::warn;
+
 /// Available feature flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Feature {
@@ -90,10 +92,7 @@ impl Features {
                 if let Ok(feature) = name.parse() {
                     features.enable(feature);
                 } else {
-                    eprintln!(
-                        "Warning: Unknown feature '{}' in GIT_REABSORB_FEATURES",
-                        name
-                    );
+                    warn!("Unknown feature '{}' in GIT_REABSORB_FEATURES", name);
                 }
             }
         }
@@ -122,7 +121,7 @@ impl Features {
                 if let Ok(feature) = name.parse() {
                     self.enable(feature);
                 } else {
-                    eprintln!("Warning: Unknown feature '{}' in --features", name);
+                    warn!("Unknown feature '{}' in --features", name);
                 }
             }
         }

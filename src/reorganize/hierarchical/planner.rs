@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use log::debug;
+
 use crate::llm::LlmClient;
 use crate::models::{Hunk, HunkId};
 
@@ -135,8 +137,8 @@ fn plan_single_cluster(
 
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
-            eprintln!(
-                "  Retrying cluster {} (attempt {}/{}): {}",
+            debug!(
+                "Retrying cluster {} (attempt {}/{}): {}",
                 cluster.id.0,
                 attempt + 1,
                 MAX_RETRIES,

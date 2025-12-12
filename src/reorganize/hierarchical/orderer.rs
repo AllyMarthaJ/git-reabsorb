@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use log::debug;
+
 use super::types::{AnalysisResults, ChangeCategory, ClusterCommit, ClusterId, HierarchicalError};
 
 /// Orders commits based on dependencies and logical ordering rules
@@ -45,11 +47,11 @@ impl GlobalOrderer {
                 }
                 Err(HierarchicalError::CyclicDependency) => {
                     if attempt == 0 {
-                        eprintln!("  Detected cyclic dependencies in commit ordering");
+                        debug!("Detected cyclic dependencies in commit ordering");
                     }
 
                     if graph.break_cycles() {
-                        eprintln!("  Broke cycle (attempt {})", attempt + 1);
+                        debug!("Broke cycle (attempt {})", attempt + 1);
                     } else {
                         // No cycles to break, but sort failed - shouldn't happen
                         return Err(HierarchicalError::CyclicDependency);

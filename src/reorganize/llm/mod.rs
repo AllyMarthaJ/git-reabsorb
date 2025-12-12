@@ -15,6 +15,8 @@ pub use types::{ChangeSpec, LlmPlan};
 
 use std::path::PathBuf;
 
+use log::{debug, info};
+
 use crate::features::Feature;
 use crate::llm::{LlmClient, LlmError};
 use crate::models::{
@@ -54,14 +56,14 @@ impl LlmReorganizer {
         let mut last_error = None;
 
         for attempt in 1..=self.max_retries {
-            eprintln!("LLM attempt {}/{}...", attempt, self.max_retries);
+            info!("LLM attempt {}/{}...", attempt, self.max_retries);
             match self.client.complete(&prompt_text) {
                 Ok(response) => match parser::extract_json(&response) {
                     Ok(mut plan) => {
                         match parser::validate_plan_with_issues(&plan, hunks) {
                             Ok(()) => return Ok(plan),
                             Err((err, Some(issue))) => {
-                                eprintln!("Validation error: {}", err);
+                                debug!("Validation error: {}", err);
                                 // Try smart fix if feature is enabled
                                 if Feature::AttemptValidationFix.is_enabled() {
                                     match self.try_fix_issue(&context, &mut plan, issue, hunks) {
@@ -70,16 +72,13 @@ impl LlmReorganizer {
                                             match parser::validate_plan(&plan, hunks) {
                                                 Ok(()) => return Ok(plan),
                                                 Err(e) => {
-                                                    eprintln!(
-                                                        "Fix didn't resolve all issues: {}",
-                                                        e
-                                                    );
+                                                    debug!("Fix didn't resolve all issues: {}", e);
                                                     last_error = Some(e);
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            eprintln!("Fix attempt failed: {}", e);
+                                            debug!("Fix attempt failed: {}", e);
                                             last_error = Some(e);
                                         }
                                     }
@@ -88,18 +87,18 @@ impl LlmReorganizer {
                                 }
                             }
                             Err((err, None)) => {
-                                eprintln!("Validation error: {}", err);
+                                debug!("Validation error: {}", err);
                                 last_error = Some(err);
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Parse error: {}", e);
+                        debug!("Parse error: {}", e);
                         last_error = Some(e);
                     }
                 },
                 Err(e) => {
-                    eprintln!("Client error: {}", e);
+                    debug!("Client error: {}", e);
                     last_error = Some(e);
                 }
             }
@@ -117,7 +116,7 @@ impl LlmReorganizer {
     ) -> Result<(), LlmError> {
         match issue {
             ValidationIssue::UnassignedHunks(unassigned_ids) => {
-                eprintln!(
+                debug!(
                     "Attempting to fix {} unassigned hunks...",
                     unassigned_ids.len()
                 );
@@ -139,7 +138,7 @@ impl LlmReorganizer {
                 hunk_id,
                 commit_indices,
             } => {
-                eprintln!("Attempting to fix duplicate hunk {}...", hunk_id);
+                debug!("Attempting to fix duplicate hunk {}...", hunk_id);
                 let fix_prompt =
                     prompt::build_fix_duplicate_prompt(context, plan, hunk_id, &commit_indices);
                 let response = self.client.complete(&fix_prompt)?;
@@ -182,7 +181,7 @@ impl LlmReorganizer {
                             ))
                         })?;
                     commit.changes.push(ChangeSpec::Hunk { id: hunk_id });
-                    eprintln!(
+                    debug!(
                         "  Added hunk {} to commit '{}'",
                         hunk_id, commit_description
                     );
@@ -197,7 +196,7 @@ impl LlmReorganizer {
                         description: CommitDescription::new(&short_description, &long_description),
                         changes: vec![ChangeSpec::Hunk { id: hunk_id }],
                     });
-                    eprintln!(
+                    debug!(
                         "  Created new commit '{}' for hunk {}",
                         short_description, hunk_id
                     );
@@ -222,7 +221,7 @@ impl LlmReorganizer {
                     .retain(|change| !matches!(change, ChangeSpec::Hunk { id } if *id == hunk_id));
             }
         }
-        eprintln!(
+        debug!(
             "  Kept hunk {} only in commit {}",
             hunk_id, chosen_commit_index
         );

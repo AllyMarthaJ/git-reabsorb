@@ -5,6 +5,8 @@ pub mod prompt;
 
 use std::sync::Arc;
 
+use log::debug;
+
 use crate::assessment::criteria::{
     get_definition, AssessmentError, Criterion, CriterionDefinition, CriterionId, RangeContext,
 };
@@ -66,7 +68,7 @@ impl Criterion for LlmCriterionAssessor {
                     match parser::parse_criterion_response(&response, &self.definition) {
                         Ok(score) => return Ok(score),
                         Err(e) if attempt < self.max_retries => {
-                            eprintln!(
+                            debug!(
                                 "Parse error (attempt {}/{}): {}",
                                 attempt, self.max_retries, e
                             );
@@ -79,7 +81,7 @@ impl Criterion for LlmCriterionAssessor {
                     }
                 }
                 Err(e) if attempt < self.max_retries => {
-                    eprintln!(
+                    debug!(
                         "LLM error (attempt {}/{}): {}",
                         attempt, self.max_retries, e
                     );

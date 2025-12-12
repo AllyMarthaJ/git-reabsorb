@@ -16,6 +16,8 @@ use std::env;
 use std::process::Command;
 use std::sync::Arc;
 
+use log::debug;
+
 /// Available LLM providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LlmProvider {
@@ -211,7 +213,7 @@ impl LlmClient for ClaudeCliClient {
         // If stderr has content, include it in debug output
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !stderr.trim().is_empty() {
-            eprintln!("Claude CLI stderr: {}", stderr.trim());
+            debug!("Claude CLI stderr: {}", stderr.trim());
         }
 
         Ok(response)

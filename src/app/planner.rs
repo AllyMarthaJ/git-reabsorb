@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use log::debug;
+
 use crate::cli::StrategyArg;
 use crate::diff_parser::{parse_diff_full, DiffParseError, ParsedDiff};
 use crate::git::{GitError, GitOps};
@@ -186,7 +188,7 @@ impl<'a, G: GitOps> Planner<'a, G> {
         let mut planned_commits = reorganizer.reorganize(source_commits, hunks)?;
         let removed_empty = retain_non_empty(&mut planned_commits);
         if removed_empty > 0 {
-            eprintln!("Note: dropped {} empty commits from plan", removed_empty);
+            debug!("Dropped {} empty commits from plan", removed_empty);
         }
 
         Ok(PlanDraft {
