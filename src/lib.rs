@@ -32,6 +32,7 @@
 
 pub mod app;
 pub mod assessment;
+pub mod cancel;
 pub mod cli;
 pub mod diff_parser;
 pub mod editor;

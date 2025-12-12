@@ -1,6 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use log::{debug, info, warn};
+
+use crate::cancel;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
 use crate::models::{BinaryFile, CommitDescription, Hunk, ModeChange, PlannedCommit};
@@ -16,6 +19,8 @@ pub enum ExecutionError {
     Editor(#[from] EditorError),
     #[error(transparent)]
     Plan(#[from] PlanFileError),
+    #[error("Cancelled by user")]
+    Cancelled,
 }
 
 /// Applies planned commits by staging hunks, opening the editor, and committing.
@@ -74,7 +79,13 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         }
 
         for (i, planned) in planned_commits.iter().enumerate().skip(start_index) {
-            println!("Creating commit {}/{}...", i + 1, total);
+            // Check for cancellation before each commit
+            if cancel::is_cancelled() {
+                warn!("Cancellation requested, stopping execution...");
+                return Err(ExecutionError::Cancelled);
+            }
+
+            info!("Creating commit {}/{}...", i + 1, total);
 
             let commit_hunk_refs: Vec<&Hunk> = planned
                 .changes
@@ -101,7 +112,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
             let has_pending_extra_changes =
                 !extra_changes_applied && (!binary_files.is_empty() || !mode_changes.is_empty());
             if adjusted_hunks.is_empty() && !has_pending_extra_changes {
-                println!("  Skipped (all changes already applied)");
+                debug!("Skipped (all changes already applied)");
                 plan.mark_commit_created("SKIPPED".to_string());
                 self.plan_store.save(plan)?;
                 continue;
@@ -117,7 +128,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
             // Apply extra changes (binary files, mode-only changes) on the first non-skipped commit
             if !extra_changes_applied {
                 if !binary_files.is_empty() {
-                    println!("  Applying {} binary files...", binary_files.len());
+                    debug!("Applying {} binary files...", binary_files.len());
                     self.git.apply_binary_files(binary_files)?;
                 }
                 // Mode changes for files WITH content hunks are handled via patch headers.
@@ -127,17 +138,14 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
                     .filter(|mc| !hunks.iter().any(|h| h.file_path == mc.file_path))
                     .collect();
                 if !mode_only_changes.is_empty() {
-                    println!(
-                        "  Applying {} mode-only changes...",
-                        mode_only_changes.len()
-                    );
+                    debug!("Applying {} mode-only changes...", mode_only_changes.len());
                     apply_mode_only_patches(self.git, &mode_only_changes)?;
                 }
                 extra_changes_applied = true;
             }
 
             let new_sha = self.git.commit(&message, no_verify)?;
-            println!("  Created {}", short_sha(&new_sha));
+            info!("Created {}", short_sha(&new_sha));
 
             // Track these hunks as applied for line number adjustment in subsequent commits
             for hunk in commit_hunk_refs {
