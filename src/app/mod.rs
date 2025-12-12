@@ -622,7 +622,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             let comparison = assessment::compare_assessments(previous, result.clone());
             let output =
                 assessment::report::format_comparison(&comparison, convert_format(opts.format));
-            info!("{}", output);
+            println!("{}", output);
         } else {
             // Format and print assessment
             let output = assessment::report::format_assessment(
@@ -630,7 +630,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 convert_format(opts.format),
                 opts.full,
             );
-            info!("{}", output);
+            println!("{}", output);
         }
 
         // Save if requested
@@ -653,7 +653,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let comparison = assessment::compare_assessments(before, after);
         let output =
             assessment::report::format_comparison(&comparison, convert_format(opts.format));
-        info!("{}", output);
+        println!("{}", output);
 
         Ok(())
     }
