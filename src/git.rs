@@ -137,6 +137,31 @@ impl Git {
         Self { work_dir: None }
     }
 
+    pub fn with_repo_root() -> Result<Self, GitError> {
+        let repo_root = Self::find_repo_root(".")?;
+        Ok(Self {
+            work_dir: Some(std::path::PathBuf::from(repo_root)),
+        })
+    }
+
+    fn find_repo_root(work_dir: impl AsRef<Path>) -> Result<String, GitError> {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(work_dir.as_ref());
+        cmd.args(["rev-parse", "--show-toplevel"]);
+
+        let output = cmd.output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitError::CommandFailed(format!(
+                "git rev-parse --show-toplevel failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     pub fn with_work_dir(work_dir: impl AsRef<Path>) -> Self {
         Self {
             work_dir: Some(work_dir.as_ref().to_path_buf()),
