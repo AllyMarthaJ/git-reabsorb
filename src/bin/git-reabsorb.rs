@@ -27,7 +27,7 @@ fn main() {
         cli.llm.opencode_backend.clone(),
     );
 
-    let git = Git::new();
+    let git = Git::with_repo_root().expect("Not a git repository");
     let editor = SystemEditor::new();
     let namespace = determine_namespace(&git);
     let plan_store = FilePlanStore::new(namespace.clone());
