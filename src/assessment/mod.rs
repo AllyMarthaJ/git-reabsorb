@@ -20,6 +20,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use log::{debug, error, info};
+
 use crate::git::GitOps;
 use crate::llm::LlmClient;
 use crate::models::SourceCommit;
@@ -69,7 +71,7 @@ impl AssessmentEngine {
         let files_in_range = self.collect_files_in_range(git, commits);
 
         // Pre-fetch all diffs (git operations are fast, do sequentially)
-        eprintln!("Fetching diffs for {} commits...", total);
+        info!("Fetching diffs for {} commits...", total);
         let mut commit_data: Vec<(usize, SourceCommit, String)> = Vec::new();
         for (position, commit) in commits.iter().enumerate() {
             let diff_content = self.get_diff_content(git, &commit.sha)?;
@@ -77,7 +79,7 @@ impl AssessmentEngine {
         }
 
         // Assess commits in parallel batches
-        eprintln!(
+        info!(
             "Assessing {} commits ({} parallel)...",
             total, self.max_parallel
         );
@@ -102,8 +104,8 @@ impl AssessmentEngine {
                     let diff_content = diff_content.clone();
 
                     thread::spawn(move || {
-                        eprintln!(
-                            "  [{}/{}] {} {}",
+                        debug!(
+                            "[{}/{}] {} {}",
                             position + 1,
                             total,
                             &commit.sha[..8.min(commit.sha.len())],
@@ -142,7 +144,7 @@ impl AssessmentEngine {
         // Check for errors
         let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
         if let Some((position, error)) = errors.into_iter().next() {
-            eprintln!("Assessment failed at commit {}", position);
+            error!("Assessment failed at commit {}", position);
             return Err(error);
         }
 

@@ -41,6 +41,8 @@ pub use validator::{assign_orphans, to_planned_commits, Validator};
 
 use std::sync::Arc;
 
+use log::{debug, info};
+
 use crate::llm::LlmClient;
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
@@ -94,7 +96,7 @@ impl HierarchicalReorganizer {
             )
         })?;
 
-        eprintln!("Phase 1: Analyzing {} hunks...", hunks.len());
+        info!("Phase 1: Analyzing {} hunks...", hunks.len());
 
         // Phase 1: Analyze hunks
         let analyzer =
@@ -102,13 +104,13 @@ impl HierarchicalReorganizer {
 
         let analysis = analyzer.analyze(hunks, source_commits)?;
 
-        eprintln!(
+        debug!(
             "  Found {} topics: {:?}",
             analysis.by_topic.len(),
             analysis.topics().take(5).collect::<Vec<_>>()
         );
 
-        eprintln!("Phase 2: Clustering hunks...");
+        info!("Phase 2: Clustering hunks...");
 
         // Phase 2: Cluster hunks
         let clusterer = Clusterer::new(Some(Arc::clone(client)))
@@ -116,9 +118,9 @@ impl HierarchicalReorganizer {
 
         let clusters = clusterer.cluster(hunks, &analysis)?;
 
-        eprintln!("  Created {} clusters", clusters.len());
+        debug!("  Created {} clusters", clusters.len());
 
-        eprintln!("Phase 3: Planning commits...");
+        info!("Phase 3: Planning commits...");
 
         // Phase 3: Plan commits
         let planner =
@@ -126,14 +128,14 @@ impl HierarchicalReorganizer {
 
         let commits = planner.plan(&clusters, hunks, &analysis)?;
 
-        eprintln!("  Planned {} commits", commits.len());
+        debug!("  Planned {} commits", commits.len());
 
-        eprintln!("Phase 4: Ordering commits...");
+        info!("Phase 4: Ordering commits...");
 
         // Phase 4: Order commits
         let ordered = GlobalOrderer::order(commits, &analysis)?;
 
-        eprintln!("Phase 5: Validating and repairing...");
+        info!("Phase 5: Validating and repairing...");
 
         // Phase 5: Validate and repair
         let validator = Validator::new(self.client.clone());
@@ -141,7 +143,7 @@ impl HierarchicalReorganizer {
 
         let invalid_count = validations.iter().filter(|v| !v.is_valid).count();
         if invalid_count > 0 {
-            eprintln!("  Found {} invalid commits, repairing...", invalid_count);
+            debug!("  Found {} invalid commits, repairing...", invalid_count);
         }
 
         let repaired = validator
@@ -156,7 +158,7 @@ impl HierarchicalReorganizer {
             .validate_complete_assignment(&final_commits, hunks)
             .map_err(|e| ReorganizeError::InvalidPlan(e.to_string()))?;
 
-        eprintln!("  Final: {} commits", final_commits.len());
+        debug!("  Final: {} commits", final_commits.len());
 
         // Convert to PlannedCommits
         Ok(to_planned_commits(final_commits))

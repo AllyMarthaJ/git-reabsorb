@@ -1,7 +1,10 @@
 mod executor;
 mod planner;
 
+use log::{error, info, warn};
+
 use crate::assessment::{self, AssessmentEngine, CriterionId};
+use crate::cancel;
 use crate::cli::{
     ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs, StrategyArg,
 };
@@ -166,7 +169,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         }
 
         let pre_reabsorb_head = self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
-        println!(
+        info!(
             "Resetting from {} to pre-reabsorb state {}",
             short_sha(&self.git.get_head()?),
             short_sha(&pre_reabsorb_head)
@@ -175,8 +178,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         self.git.reset_hard(&pre_reabsorb_head)?;
         self.git.clear_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
 
-        println!("Successfully reset to pre-reabsorb state.");
-        println!(
+        info!("Successfully reset to pre-reabsorb state.");
+        info!(
             "The saved ref ({}) has been cleared.",
             self.pre_reabsorb_ref
         );
@@ -190,11 +193,11 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         if opts.resume {
             if plan.is_complete() {
-                println!("Plan is already complete. Nothing to resume.");
+                info!("Plan is already complete. Nothing to resume.");
                 self.plan_store.delete()?;
                 return Ok(());
             }
-            println!(
+            info!(
                 "Resuming plan: {}/{} commits already created",
                 plan.next_commit_index,
                 plan.commits.len()
@@ -207,15 +210,35 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 plan_path.display()
             )));
         } else {
-            println!("Applying saved plan (strategy: {})", plan.strategy);
+            info!("Applying saved plan (strategy: {})", plan.strategy);
         }
 
-        if !opts.resume && self.git.get_head()? != plan.base_sha {
-            eprintln!(
-                "Warning: HEAD ({}) differs from plan's base ({})",
-                short_sha(&self.git.get_head()?),
-                short_sha(&plan.base_sha)
-            );
+        // For fresh apply (not resume), we need to reset to base
+        if !opts.resume {
+            // Check for existing pre-reabsorb state
+            if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
+                warn!(
+                    "Pre-reabsorb state exists ({}). Use 'git reabsorb reset' or it will be overwritten.",
+                    short_sha(&self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?)
+                );
+            }
+
+            // Verify we're at the expected HEAD (the original_head from when plan was saved)
+            let current_head = self.git.get_head()?;
+            if current_head != plan.original_head {
+                warn!(
+                    "HEAD ({}) differs from plan's original HEAD ({})",
+                    short_sha(&current_head),
+                    short_sha(&plan.original_head)
+                );
+            }
+
+            // Save pre-reabsorb state and reset to base
+            self.git.save_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
+            info!("Saved pre-reabsorb state to {}", self.pre_reabsorb_ref);
+
+            info!("Resetting to {}...", short_sha(&plan.base_sha));
+            self.git.reset_to(&plan.base_sha)?;
         }
 
         let hunks = plan.get_working_tree_hunks();
@@ -263,70 +286,37 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
     fn handle_plan(&mut self, opts: PlanArgs) -> Result<(), AppError> {
         if self.plan_store.exists() {
             let plan_path = crate::plan_store::plan_file_path(&self.namespace);
-            eprintln!(
-                "Warning: A saved plan exists. Use 'git reabsorb apply' or delete {}\n",
+            warn!(
+                "A saved plan exists. Use 'git reabsorb apply' or delete {}",
                 plan_path.display()
             );
         }
 
         let range = resolve_range(&self.git, opts.range.as_deref(), opts.base.as_deref())?;
-        println!(
-            "Scrambling {}..{}",
+        info!(
+            "Planning {}..{}",
             short_sha(&range.base),
             short_sha(&range.head)
         );
 
-        if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
-            eprintln!(
-                "Warning: Pre-reabsorb state exists ({}). Use 'git reabsorb reset' or it will be overwritten.\n",
-                short_sha(&self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?)
-            );
-        }
-
         let planner = Planner::new(&self.git, self.strategies.clone());
         let source_commits = planner.read_source_commits(&range.base, &range.head)?;
-        println!("Found {} commits", source_commits.len());
+        info!("Found {} commits", source_commits.len());
 
         let (file_to_commits, new_files_to_commits) =
             planner.build_file_to_commits_map(&source_commits)?;
 
-        if opts.dry_run {
-            let hunks = planner.read_hunks_from_source_commits(&source_commits)?;
-            let plan = planner.draft_plan(
-                opts.strategy,
-                &source_commits,
-                &hunks,
-                &file_to_commits,
-                &new_files_to_commits,
-            )?;
-            println!("Parsed {} hunks", hunks.len());
-            println!("Strategy: {}", plan.strategy_name);
-            print_planned_commits(&plan.planned_commits, 0);
-            println!("--dry-run: no changes made.");
-            return Ok(());
-        }
-
-        self.git.save_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
-        println!("Saved pre-reabsorb state to {}", self.pre_reabsorb_ref);
-
-        // Get the diff between base and head BEFORE resetting
-        // This ensures we capture new files that would become untracked after reset
+        // Get the diff between base and head (doesn't modify working tree)
         let diff_output = self.git.diff_trees(&range.base, &range.head)?;
         let (hunks, binary_files, mode_changes, file_modes) =
             planner.parse_diff_full_with_commit_mapping(&diff_output, &file_to_commits)?;
-        println!("Parsed {} hunks", hunks.len());
+        info!("Parsed {} hunks", hunks.len());
         if !binary_files.is_empty() {
-            println!("Found {} binary files", binary_files.len());
+            info!("Found {} binary files", binary_files.len());
         }
         if !mode_changes.is_empty() {
-            println!("Found {} mode changes", mode_changes.len());
+            info!("Found {} mode changes", mode_changes.len());
         }
-        if !file_modes.is_empty() {
-            println!("Found {} files with mode info", file_modes.len());
-        }
-
-        println!("Resetting to {}...", short_sha(&range.base));
-        self.git.reset_to(&range.base)?;
 
         let plan = planner.draft_plan_with_extra_changes(
             opts.strategy,
@@ -337,8 +327,50 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &binary_files,
             &mode_changes,
         )?;
-        println!("Strategy: {}", plan.strategy_name);
+        info!("Strategy: {}", plan.strategy_name);
         print_planned_commits(&plan.planned_commits, 0);
+
+        // Dry run: just show the plan, no changes
+        if opts.dry_run {
+            info!("--dry-run: no changes made.");
+            return Ok(());
+        }
+
+        // Save plan: save to disk without applying, no reset
+        if opts.save_plan {
+            let saved_plan = SavedPlan::new(
+                plan.strategy_name.clone(),
+                range.base.clone(),
+                range.head.clone(),
+                &plan.planned_commits,
+                &plan.hunks,
+                &plan.file_to_commits,
+                &plan.new_files_to_commits,
+                &plan.binary_files,
+                &plan.mode_changes,
+            );
+            self.plan_store.save(&saved_plan)?;
+            info!(
+                "Plan saved to {}",
+                crate::plan_store::plan_file_path(&self.namespace).display()
+            );
+            info!("To apply: git reabsorb apply");
+            return Ok(());
+        }
+
+        // Full execution: save pre-reabsorb state, reset, and apply
+        if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
+            warn!(
+                "Pre-reabsorb state exists ({}). Use 'git reabsorb reset' or it will be overwritten.",
+                short_sha(&self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?)
+            );
+        }
+
+        self.git.save_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
+        info!("Saved pre-reabsorb state to {}", self.pre_reabsorb_ref);
+
+        info!("Resetting to {}...", short_sha(&range.base));
+        self.git.reset_to(&range.base)?;
 
         let mut saved_plan = SavedPlan::new(
             plan.strategy_name.clone(),
@@ -384,8 +416,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         self.verify_final_state(&saved_plan.original_head)?;
         self.plan_store.delete()?;
-        println!("\nDone! Created {} commits.", plan.planned_commits.len());
-        println!("To undo: git reabsorb reset");
+        info!("Done! Created {} commits.", plan.planned_commits.len());
+        info!("To undo: git reabsorb reset");
 
         Ok(())
     }
@@ -404,49 +436,67 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         }
     }
 
+    /// Reset to pre-reabsorb state and clean up.
+    fn reset_to_pre_reabsorb(&self) -> Result<(), AppError> {
+        if !self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
+            return Ok(()); // Nothing to reset to
+        }
+
+        let pre_reabsorb_head = self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
+        self.git.reset_hard(&pre_reabsorb_head)?;
+        self.git.clear_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
+        self.plan_store.delete().ok(); // Ignore errors cleaning up plan
+
+        info!(
+            "Reset to pre-reabsorb state ({})",
+            short_sha(&pre_reabsorb_head)
+        );
+        Ok(())
+    }
+
     fn handle_status(&mut self) -> Result<(), AppError> {
-        println!("=== Git Reabsorb Status ===\n");
+        info!("=== Git Reabsorb Status ===");
 
         // Current git state
         let head = self.git.get_head()?;
-        println!("Current HEAD: {}", short_sha(&head));
+        info!("Current HEAD: {}", short_sha(&head));
 
         if let Ok(branch) = self.git.current_branch_name() {
-            println!("Current branch: {}", branch);
+            info!("Current branch: {}", branch);
         }
 
         // Pre-reabsorb state
-        println!("\n--- Pre-reabsorb State ---");
+        info!("--- Pre-reabsorb State ---");
         if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
             let pre = self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
-            println!(
+            info!(
                 "Pre-reabsorb ref: {} -> {}",
                 self.pre_reabsorb_ref,
                 short_sha(&pre)
             );
         } else {
-            println!("No pre-reabsorb state saved");
+            info!("No pre-reabsorb state saved");
         }
 
         // Plan state
-        println!("\n--- Saved Plan ---");
+        info!("--- Saved Plan ---");
         if !self.plan_store.exists() {
-            println!("No saved plan found");
+            info!("No saved plan found");
             return Ok(());
         }
 
         let plan = self.plan_store.load()?;
-        println!("Strategy: {}", plan.strategy);
-        println!("Base SHA: {}", short_sha(&plan.base_sha));
-        println!("Original HEAD: {}", short_sha(&plan.original_head));
-        println!(
+        info!("Strategy: {}", plan.strategy);
+        info!("Base SHA: {}", short_sha(&plan.base_sha));
+        info!("Original HEAD: {}", short_sha(&plan.original_head));
+        info!(
             "Progress: {}/{} commits",
             plan.next_commit_index,
             plan.commits.len()
         );
 
         // Show commits
-        println!("\n--- Planned Commits ---");
+        info!("--- Planned Commits ---");
         for (i, commit) in plan.commits.iter().enumerate() {
             let status = if i < plan.next_commit_index {
                 if let Some(sha) = &commit.created_sha {
@@ -459,7 +509,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             } else {
                 "[PENDING]".to_string()
             };
-            println!(
+            info!(
                 "  {}. {} \"{}\" ({} changes)",
                 i + 1,
                 status,
@@ -471,9 +521,9 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         // If there's a next commit, show details
         if plan.next_commit_index < plan.commits.len() {
             let next_commit = &plan.commits[plan.next_commit_index];
-            println!("\n--- Next Commit Details ---");
-            println!("Message: {}", next_commit.description.short);
-            println!("Changes: {} hunks", next_commit.changes.len());
+            info!("--- Next Commit Details ---");
+            info!("Message: {}", next_commit.description.short);
+            info!("Changes: {} hunks", next_commit.changes.len());
 
             // Show files involved
             let hunks = plan.get_working_tree_hunks();
@@ -487,25 +537,25 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                     files.insert(&hunk.file_path);
                 }
             }
-            println!("Files:");
+            info!("Files:");
             for file in files {
                 // Check if file is in index
                 let in_index = self.git.file_in_index(file).unwrap_or(false);
-                println!("  {} (in_index={})", file.display(), in_index);
+                info!("  {} (in_index={})", file.display(), in_index);
             }
         }
 
         // Show all files in index for debugging
-        println!("\n--- Git Index Status ---");
+        info!("--- Git Index Status ---");
         if let Ok(output) = self.git.run_git_output(&["ls-files"]) {
             let files: Vec<&str> = output.lines().take(20).collect();
-            println!("Files in index (first 20):");
+            info!("Files in index (first 20):");
             for f in &files {
-                println!("  {}", f);
+                info!("  {}", f);
             }
             let total = output.lines().count();
             if total > 20 {
-                println!("  ... and {} more", total - 20);
+                info!("  ... and {} more", total - 20);
             }
         }
 
@@ -516,7 +566,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         // Resolve commit range
         let range = resolve_range(&self.git, opts.range.as_deref(), opts.base.as_deref())?;
 
-        eprintln!(
+        info!(
             "Assessing commits {}..{}",
             short_sha(&range.base),
             short_sha(&range.head)
@@ -528,7 +578,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             return Err(AppError::User("No commits found in range".to_string()));
         }
 
-        eprintln!("Found {} commits to assess", commits.len());
+        info!("Found {} commits to assess", commits.len());
 
         // Parse criteria from args or use all
         let criterion_ids = match &opts.criteria {
@@ -558,22 +608,22 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             let comparison = assessment::compare_assessments(previous, result.clone());
             let output =
                 assessment::report::format_comparison(&comparison, convert_format(opts.format));
-            println!("{}", output);
+            info!("{}", output);
         } else {
             // Format and print assessment
             let output = assessment::report::format_assessment(
                 &result,
                 convert_format(opts.format),
-                opts.verbose,
+                opts.full,
             );
-            println!("{}", output);
+            info!("{}", output);
         }
 
         // Save if requested
         if let Some(save_path) = opts.save {
             let path = assessment::save_assessment(&result, save_path.as_deref())
                 .map_err(|e| AppError::User(format!("Failed to save assessment: {}", e)))?;
-            eprintln!("Assessment saved to: {}", path.display());
+            info!("Assessment saved to: {}", path.display());
         }
 
         Ok(())
@@ -589,23 +639,22 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let comparison = assessment::compare_assessments(before, after);
         let output =
             assessment::report::format_comparison(&comparison, convert_format(opts.format));
-        println!("{}", output);
+        info!("{}", output);
 
         Ok(())
     }
 }
 
 fn print_planned_commits(commits: &[PlannedCommit], offset: usize) {
-    println!("\nPlanned {} commits:", commits.len());
+    info!("Planned {} commits:", commits.len());
     for (i, commit) in commits.iter().enumerate() {
-        println!(
+        info!(
             "  {}. \"{}\" ({} changes)",
             offset + i + 1,
             commit.description.short,
             commit.changes.len()
         );
     }
-    println!();
 }
 
 fn convert_format(format: OutputFormat) -> assessment::report::OutputFormat {

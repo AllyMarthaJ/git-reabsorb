@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use log::debug;
+
 use crate::llm::LlmClient;
 use crate::models::{Hunk, HunkId, SourceCommit};
 use crate::utils::{extract_json_str, format_diff_lines};
@@ -110,8 +112,8 @@ fn analyze_single_hunk(
 
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
-            eprintln!(
-                "  Retrying hunk {} (attempt {}/{}): {}",
+            debug!(
+                "Retrying hunk {} (attempt {}/{}): {}",
                 hunk_id.0,
                 attempt + 1,
                 MAX_RETRIES,
