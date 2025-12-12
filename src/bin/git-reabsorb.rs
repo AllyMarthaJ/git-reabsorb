@@ -1,4 +1,5 @@
 use clap::Parser;
+use log::LevelFilter;
 
 use git_reabsorb::app::{App, StrategyFactory};
 use git_reabsorb::cli::{Cli, Command};
@@ -10,6 +11,22 @@ use git_reabsorb::plan_store::FilePlanStore;
 
 fn main() {
     let cli = Cli::parse();
+
+    // Initialize logging based on verbosity flags
+    let log_level = if cli.quiet {
+        LevelFilter::Error
+    } else {
+        match cli.verbosity {
+            0 => LevelFilter::Info,
+            1 => LevelFilter::Debug,
+            _ => LevelFilter::Trace,
+        }
+    };
+    env_logger::Builder::new()
+        .filter_level(log_level)
+        .format_target(false)
+        .format_timestamp(None)
+        .init();
 
     // Initialize feature flags from environment, then apply CLI overrides
     let features = Features::from_env().with_overrides(cli.features.as_deref());
@@ -46,7 +63,7 @@ fn main() {
         .unwrap_or(Command::Plan(cli.default_plan.clone()));
 
     if let Err(err) = app.run(command) {
-        eprintln!("Error: {}", err);
+        log::error!("{}", err);
         std::process::exit(1);
     }
 }
