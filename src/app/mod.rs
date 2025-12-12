@@ -255,6 +255,9 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         // Mode changes for files with content are handled via mode_changes list.
         let file_modes = std::collections::HashMap::new();
 
+        // Register cancellation handler for graceful Ctrl+C cleanup
+        cancel::register_handler();
+
         let executor = PlanExecutor::new(&self.git, &self.editor, &self.plan_store);
         if let Err(err) = executor.execute(
             &hunks,
@@ -267,18 +270,27 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             opts.no_editor,
             &mut plan,
         ) {
-            eprintln!("\nError during commit creation: {}", err);
-            eprintln!("Progress saved. Use 'git reabsorb apply --resume' to continue.");
+            // Handle cancellation by resetting to pre-reabsorb state
+            if matches!(err, ExecutionError::Cancelled) {
+                warn!("Cancelled. Resetting to pre-reabsorb state...");
+                if let Err(reset_err) = self.reset_to_pre_reabsorb() {
+                    error!("Failed to reset: {}", reset_err);
+                }
+                return Err(AppError::User("Cancelled by user".to_string()));
+            }
+
+            error!("Commit creation failed: {}", err);
+            info!("Progress saved. Use 'git reabsorb apply --resume' to continue.");
             return Err(AppError::Execution(err));
         }
 
         self.verify_final_state(&plan.original_head)?;
         self.plan_store.delete()?;
-        println!(
-            "\nDone! Created {} commits.",
+        info!(
+            "Done! Created {} commits.",
             plan.next_commit_index.saturating_sub(already_created)
         );
-        println!("To undo: git reabsorb reset");
+        info!("To undo: git reabsorb reset");
 
         Ok(())
     }
@@ -385,15 +397,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         );
         self.plan_store.save(&saved_plan)?;
 
-        if opts.save_plan {
-            println!(
-                "Plan saved to {}",
-                crate::plan_store::plan_file_path(&self.namespace).display()
-            );
-            println!("\nTo apply: git reabsorb apply");
-            println!("To undo reset: git reabsorb reset");
-            return Ok(());
-        }
+        // Register cancellation handler for graceful Ctrl+C cleanup
+        cancel::register_handler();
 
         let executor = PlanExecutor::new(&self.git, &self.editor, &self.plan_store);
         if let Err(err) = executor.execute(
@@ -407,8 +412,17 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             opts.no_editor,
             &mut saved_plan,
         ) {
-            eprintln!("\nError: {}", err);
-            eprintln!(
+            // Handle cancellation by resetting to pre-reabsorb state
+            if matches!(err, ExecutionError::Cancelled) {
+                warn!("Cancelled. Resetting to pre-reabsorb state...");
+                if let Err(reset_err) = self.reset_to_pre_reabsorb() {
+                    error!("Failed to reset: {}", reset_err);
+                }
+                return Err(AppError::User("Cancelled by user".to_string()));
+            }
+
+            error!("{}", err);
+            info!(
                 "Progress saved. Use 'git reabsorb apply --resume' to continue, or 'git reabsorb reset' to undo."
             );
             return Err(AppError::Execution(err));
