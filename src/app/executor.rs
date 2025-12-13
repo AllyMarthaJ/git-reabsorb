@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use log::{debug, info, warn};
 
@@ -7,7 +7,7 @@ use crate::cancel;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
 use crate::models::{BinaryFile, CommitDescription, Hunk, ModeChange, PlannedCommit};
-use crate::patch::{FileMode, PatchContext};
+use crate::patch::PatchContext;
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 use crate::utils::short_sha;
 
@@ -47,7 +47,6 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         new_files_to_commits: &HashMap<String, Vec<String>>,
         binary_files: &[BinaryFile],
         mode_changes: &[ModeChange],
-        file_modes: &HashMap<PathBuf, FileMode>,
         no_verify: bool,
         no_editor: bool,
         plan: &mut SavedPlan,
@@ -55,10 +54,11 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         let total = planned_commits.len();
         let start_index = plan.next_commit_index;
 
-        // Create patch context from new_files_to_commits and file_modes
+        // Create patch context from new_files_to_commits and mode_changes
         // This tells PatchContext which files are NEW in the commit range
-        // (didn't exist at base), and the file modes for proper patch headers.
-        let patch_context = PatchContext::with_file_modes(new_files_to_commits.keys(), file_modes);
+        // (didn't exist at base), and the mode changes for proper patch headers.
+        let patch_context =
+            PatchContext::with_mode_changes(new_files_to_commits.keys(), mode_changes);
 
         // Track which hunks have been applied (for line number adjustment)
         let mut applied_hunks_per_file: HashMap<std::path::PathBuf, Vec<Hunk>> = HashMap::new();
@@ -135,7 +135,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
                 // Here we only apply mode-only changes (files with no content hunks).
                 let mode_only_changes: Vec<_> = mode_changes
                     .iter()
-                    .filter(|mc| !hunks.iter().any(|h| h.file_path == mc.file_path))
+                    .filter(|mc| !mc.has_content_hunks)
                     .collect();
                 if !mode_only_changes.is_empty() {
                     debug!("Applying {} mode-only changes...", mode_only_changes.len());
@@ -269,14 +269,19 @@ fn apply_mode_only_patches<G: GitOps>(
     use std::io::Write;
 
     for mode_change in mode_changes {
+        // Mode-only patches require both old and new mode
+        let (Some(old), Some(new)) = (&mode_change.old_mode, &mode_change.new_mode) else {
+            continue;
+        };
+
         let path_str = mode_change.file_path.to_string_lossy();
 
         // Generate a mode-only patch
         let patch = format!(
             "diff --git a/{path} b/{path}\nold mode {old}\nnew mode {new}\n",
             path = path_str,
-            old = mode_change.old_mode,
-            new = mode_change.new_mode
+            old = old,
+            new = new
         );
 
         // Write to temp file and apply

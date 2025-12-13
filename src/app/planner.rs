@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use log::debug;
 
@@ -7,7 +6,6 @@ use crate::cli::StrategyArg;
 use crate::diff_parser::{parse_diff, DiffParseError, ParsedDiff};
 use crate::git::{GitError, GitOps};
 use crate::models::{BinaryFile, Hunk, ModeChange, PlannedCommit, SourceCommit};
-use crate::patch::FileMode;
 use crate::reorganize::ReorganizeError;
 
 use super::StrategyFactory;
@@ -71,25 +69,15 @@ impl<'a, G: GitOps> Planner<'a, G> {
     }
 
     /// Parse diff with commit mapping, returning hunks, binary files, and mode changes.
-    #[allow(clippy::type_complexity)]
     pub fn parse_diff_full_with_commit_mapping(
         &self,
         diff_output: &str,
         file_to_commits: &HashMap<String, Vec<String>>,
-    ) -> Result<
-        (
-            Vec<Hunk>,
-            Vec<BinaryFile>,
-            Vec<ModeChange>,
-            HashMap<PathBuf, FileMode>,
-        ),
-        DiffParseError,
-    > {
+    ) -> Result<(Vec<Hunk>, Vec<BinaryFile>, Vec<ModeChange>), DiffParseError> {
         let ParsedDiff {
             mut hunks,
             mut binary_files,
             mut mode_changes,
-            file_modes,
         } = parse_diff(diff_output, &[], 0)?;
 
         // Map hunks to their source commits
@@ -119,7 +107,7 @@ impl<'a, G: GitOps> Planner<'a, G> {
             }
         }
 
-        Ok((hunks, binary_files, mode_changes, file_modes))
+        Ok((hunks, binary_files, mode_changes))
     }
 
     #[allow(clippy::too_many_arguments)]

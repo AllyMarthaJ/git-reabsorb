@@ -251,10 +251,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             plan.next_commit_index,
         );
 
-        // Note: file_modes aren't stored in saved plans, so we use an empty map on resume.
-        // Mode changes for files with content are handled via mode_changes list.
-        let file_modes = std::collections::HashMap::new();
-
         // Register cancellation handler for graceful Ctrl+C cleanup
         cancel::register_handler();
 
@@ -265,7 +261,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &new_files_to_commits,
             &binary_files,
             &mode_changes,
-            &file_modes,
             opts.no_verify,
             opts.no_editor,
             &mut plan,
@@ -320,7 +315,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         // Get the diff between base and head (doesn't modify working tree)
         let diff_output = self.git.diff_trees(&range.base, &range.head)?;
-        let (hunks, binary_files, mode_changes, file_modes) =
+        let (hunks, binary_files, mode_changes) =
             planner.parse_diff_full_with_commit_mapping(&diff_output, &file_to_commits)?;
         info!("Parsed {} hunks", hunks.len());
         if !binary_files.is_empty() {
@@ -407,7 +402,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.new_files_to_commits,
             &plan.binary_files,
             &plan.mode_changes,
-            &file_modes,
             opts.no_verify,
             opts.no_editor,
             &mut saved_plan,

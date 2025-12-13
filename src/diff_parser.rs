@@ -1,8 +1,6 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::models::{BinaryChangeType, BinaryFile, DiffLine, Hunk, HunkId, ModeChange};
-use crate::patch::FileMode;
 
 /// Errors that can occur during diff parsing
 #[derive(Debug, thiserror::Error)]
@@ -18,12 +16,10 @@ pub enum DiffParseError {
 pub struct ParsedDiff {
     pub hunks: Vec<Hunk>,
     pub binary_files: Vec<BinaryFile>,
-    /// Mode-only changes (files with mode change but no content change).
-    /// For files with both content and mode changes, use `file_modes`.
+    /// All file mode information from the diff.
+    /// Includes new files, deleted files, and mode changes.
+    /// The `has_content_hunks` field indicates whether the file has associated hunks.
     pub mode_changes: Vec<ModeChange>,
-    /// File modes for all files that have non-default modes.
-    /// This includes new files with specific modes, deleted files, and mode changes.
-    pub file_modes: HashMap<PathBuf, FileMode>,
 }
 
 ///
@@ -47,10 +43,6 @@ pub fn parse_diff(
     let mut current_file_has_hunks = false;
     let mut current_file_is_binary = false;
 
-    // Helper to finalize file mode information for the previous file.
-    // This stores:
-    // 1. file_modes: Mode info for ALL files with non-default modes (new files, deleted files, mode changes)
-    // 2. mode_changes: Mode-only changes (files with mode change but no content hunks)
     let finalize_file_mode = |result: &mut ParsedDiff,
                               file: &Option<PathBuf>,
                               old_mode: &Option<String>,
@@ -61,40 +53,35 @@ pub fn parse_diff(
                               is_binary: bool| {
         let Some(file_path) = file else { return };
 
-        // Store file mode in file_modes map for patch generation
-        if is_new {
-            if let Some(mode) = new_mode {
-                result
-                    .file_modes
-                    .insert(file_path.clone(), FileMode::New(mode.clone()));
-            }
-        } else if is_deleted {
-            if let Some(mode) = old_mode {
-                result
-                    .file_modes
-                    .insert(file_path.clone(), FileMode::Deleted(mode.clone()));
-            }
-        } else if let (Some(old), Some(new)) = (old_mode, new_mode) {
-            // Mode change on existing file
-            result.file_modes.insert(
-                file_path.clone(),
-                FileMode::Changed {
-                    old: old.clone(),
-                    new: new.clone(),
-                },
-            );
-
-            // Also add to mode_changes for mode-only files (no content hunks)
-            // Binary files have their mode handled when we `git add` them
-            if !has_hunks && !is_binary {
-                result.mode_changes.push(ModeChange {
-                    file_path: file_path.clone(),
-                    old_mode: old.clone(),
-                    new_mode: new.clone(),
-                    likely_source_commits: likely_source_commits.to_vec(),
-                });
-            }
+        // Only store mode info if we have mode information
+        let has_mode_info = old_mode.is_some() || new_mode.is_some();
+        if !has_mode_info {
+            return;
         }
+
+        // For new files, only new_mode is set
+        // For deleted files, only old_mode is set
+        // For mode changes, both are set
+        let (old, new) = if is_new {
+            (None, new_mode.clone())
+        } else if is_deleted {
+            (old_mode.clone(), None)
+        } else {
+            (old_mode.clone(), new_mode.clone())
+        };
+
+        // Binary files have their mode handled when we `git add` them
+        if is_binary {
+            return;
+        }
+
+        result.mode_changes.push(ModeChange {
+            file_path: file_path.clone(),
+            old_mode: old,
+            new_mode: new,
+            likely_source_commits: likely_source_commits.to_vec(),
+            has_content_hunks: has_hunks,
+        });
     };
 
     for line in diff_output.lines() {
@@ -674,8 +661,9 @@ new mode 100755
         assert_eq!(result.binary_files.len(), 0);
         assert_eq!(result.mode_changes.len(), 1);
         assert_eq!(result.mode_changes[0].file_path, PathBuf::from("script.sh"));
-        assert_eq!(result.mode_changes[0].old_mode, "100644");
-        assert_eq!(result.mode_changes[0].new_mode, "100755");
+        assert_eq!(result.mode_changes[0].old_mode, Some("100644".to_string()));
+        assert_eq!(result.mode_changes[0].new_mode, Some("100755".to_string()));
+        assert!(!result.mode_changes[0].has_content_hunks);
         assert_eq!(
             result.mode_changes[0].likely_source_commits,
             vec!["commit1".to_string()]
@@ -684,9 +672,6 @@ new mode 100755
 
     #[test]
     fn test_parse_mode_change_with_content_change() {
-        // When a file has both mode change and content change,
-        // the mode is stored in file_modes for patch generation.
-        // mode_changes only contains mode-only changes (no content).
         let diff = r#"diff --git a/script.sh b/script.sh
 old mode 100644
 new mode 100755
@@ -701,18 +686,11 @@ index 1234567..abcdefg
         let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 1);
         assert_eq!(result.binary_files.len(), 0);
-        // mode_changes is empty because this file has content hunks
-        assert_eq!(result.mode_changes.len(), 0);
-        // Mode is stored in file_modes for patch generation
-        assert_eq!(result.file_modes.len(), 1);
-        let mode = result.file_modes.get(&PathBuf::from("script.sh")).unwrap();
-        match mode {
-            FileMode::Changed { old, new } => {
-                assert_eq!(old, "100644");
-                assert_eq!(new, "100755");
-            }
-            _ => panic!("Expected FileMode::Changed"),
-        }
+        assert_eq!(result.mode_changes.len(), 1);
+        assert_eq!(result.mode_changes[0].file_path, PathBuf::from("script.sh"));
+        assert_eq!(result.mode_changes[0].old_mode, Some("100644".to_string()));
+        assert_eq!(result.mode_changes[0].new_mode, Some("100755".to_string()));
+        assert!(result.mode_changes[0].has_content_hunks);
     }
 
     #[test]

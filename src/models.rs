@@ -53,19 +53,25 @@ pub enum BinaryChangeType {
     Deleted,
 }
 
-/// A file mode change (e.g., making a file executable).
+/// A file mode change (e.g., making a file executable, or new/deleted file modes).
 ///
-/// Mode-only changes don't have content diffs, so they're tracked separately.
+/// This struct represents mode information for files in a diff:
+/// - New file: `old_mode = None`, `new_mode = Some(...)`
+/// - Deleted file: `old_mode = Some(...)`, `new_mode = None`
+/// - Mode change: `old_mode = Some(...)`, `new_mode = Some(...)`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModeChange {
     #[serde(with = "path_serde")]
     pub file_path: PathBuf,
-    /// The old file mode (e.g., "100644")
-    pub old_mode: String,
-    /// The new file mode (e.g., "100755")
-    pub new_mode: String,
+    /// The old file mode (e.g., "100644"). None for new files.
+    pub old_mode: Option<String>,
+    /// The new file mode (e.g., "100755"). None for deleted files.
+    pub new_mode: Option<String>,
     /// Source commits that introduced this mode change.
     pub likely_source_commits: Vec<String>,
+    /// Whether this file has content hunks (hunks handle their own patch headers).
+    #[serde(default)]
+    pub has_content_hunks: bool,
 }
 
 /// A single line in a diff

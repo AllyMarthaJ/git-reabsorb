@@ -32,18 +32,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::models::{DiffLine, Hunk};
-
-/// File mode information from a diff.
-#[derive(Debug, Clone)]
-pub enum FileMode {
-    /// New file with the given mode (e.g., "100755" for executable)
-    New(String),
-    /// Deleted file with the given mode
-    Deleted(String),
-    /// Mode change from old to new (e.g., 100644 -> 100755)
-    Changed { old: String, new: String },
-}
+use crate::models::{DiffLine, Hunk, ModeChange};
 
 /// The type of change to a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,8 +98,8 @@ pub struct PatchContext {
     /// Files that are NEW in the commit range (didn't exist at base).
     /// Key is the file path as a string.
     new_files_in_range: HashSet<String>,
-    /// File modes keyed by file path.
-    file_modes: HashMap<String, FileMode>,
+    /// Mode changes keyed by file path.
+    mode_changes: HashMap<String, ModeChange>,
 }
 
 impl PatchContext {
@@ -124,23 +113,23 @@ impl PatchContext {
                 .into_iter()
                 .map(|s| s.as_ref().to_string())
                 .collect(),
-            file_modes: HashMap::new(),
+            mode_changes: HashMap::new(),
         }
     }
 
-    /// Create a patch context with file modes from parsed diff.
-    pub fn with_file_modes<S: AsRef<str>>(
+    /// Create a patch context with mode changes from parsed diff.
+    pub fn with_mode_changes<S: AsRef<str>>(
         new_files: impl IntoIterator<Item = S>,
-        file_modes: &HashMap<std::path::PathBuf, FileMode>,
+        mode_changes: &[ModeChange],
     ) -> Self {
         Self {
             new_files_in_range: new_files
                 .into_iter()
                 .map(|s| s.as_ref().to_string())
                 .collect(),
-            file_modes: file_modes
+            mode_changes: mode_changes
                 .iter()
-                .map(|(k, v)| (k.to_string_lossy().to_string(), v.clone()))
+                .map(|mc| (mc.file_path.to_string_lossy().to_string(), mc.clone()))
                 .collect(),
         }
     }
@@ -149,14 +138,14 @@ impl PatchContext {
     pub fn empty() -> Self {
         Self {
             new_files_in_range: HashSet::new(),
-            file_modes: HashMap::new(),
+            mode_changes: HashMap::new(),
         }
     }
 
-    /// Get the file mode for a file, if any.
-    pub fn get_file_mode(&self, file_path: &Path) -> Option<&FileMode> {
+    /// Get the mode change for a file, if any.
+    pub fn get_mode_change(&self, file_path: &Path) -> Option<&ModeChange> {
         let path_str = file_path.to_string_lossy();
-        self.file_modes.get(path_str.as_ref())
+        self.mode_changes.get(path_str.as_ref())
     }
 
     /// Check if a file is NEW in the commit range.
@@ -251,37 +240,37 @@ impl PatchContext {
         file_in_index: bool,
     ) -> (String, FileChangeType) {
         let change_type = self.determine_change_type(file_path, file_in_index, hunks);
-        let file_mode = self.get_file_mode(file_path);
+        let mode_change = self.get_mode_change(file_path);
 
         let patch = match change_type {
             FileChangeType::New => {
                 // For new files, we need to transform hunks to extract only the
                 // content that should exist in the final file.
                 let new_file_hunk = PatchWriter::create_new_file_hunk(file_path, hunks);
-                PatchWriter::write_patch_with_file_mode(
+                PatchWriter::write_patch_with_mode_change(
                     file_path,
                     &[&new_file_hunk],
                     FileChangeType::New,
-                    file_mode,
+                    mode_change,
                 )
             }
             FileChangeType::Deleted => {
                 // For deletions, transform hunks to show content being removed
                 let delete_hunk = PatchWriter::create_delete_file_hunk(file_path, hunks);
-                PatchWriter::write_patch_with_file_mode(
+                PatchWriter::write_patch_with_mode_change(
                     file_path,
                     &[&delete_hunk],
                     FileChangeType::Deleted,
-                    file_mode,
+                    mode_change,
                 )
             }
             FileChangeType::Modified => {
                 // For modifications, use hunks as-is with proper headers
-                PatchWriter::write_patch_with_file_mode(
+                PatchWriter::write_patch_with_mode_change(
                     file_path,
                     hunks,
                     FileChangeType::Modified,
-                    file_mode,
+                    mode_change,
                 )
             }
         };
@@ -327,43 +316,47 @@ impl PatchWriter {
         hunks: &[H],
         change_type: FileChangeType,
     ) -> String {
-        Self::write_patch_with_file_mode(file_path, hunks, change_type, None)
+        Self::write_patch_with_mode_change(file_path, hunks, change_type, None)
     }
 
-    /// Generate a complete patch with explicit file change type and optional file mode.
+    /// Generate a complete patch with explicit file change type and optional mode change.
     ///
     /// This includes the extended header lines for file modes:
     /// - New files: `new file mode <mode>`
     /// - Deleted files: `deleted file mode <mode>`
     /// - Mode changes: `old mode <old>` + `new mode <new>`
     #[must_use]
-    pub fn write_patch_with_file_mode<H: AsRef<Hunk>>(
+    pub fn write_patch_with_mode_change<H: AsRef<Hunk>>(
         file_path: &Path,
         hunks: &[H],
         change_type: FileChangeType,
-        file_mode: Option<&FileMode>,
+        mode_change: Option<&ModeChange>,
     ) -> String {
         let mut patch = String::new();
         let path_str = file_path.to_string_lossy();
 
         // Git extended headers require the "diff --git" line first
-        if file_mode.is_some() {
+        if mode_change.is_some() {
             patch.push_str(&format!("diff --git a/{} b/{}\n", path_str, path_str));
         }
 
-        // Add mode headers based on file mode type (before --- and +++ lines)
-        if let Some(mode) = file_mode {
-            match mode {
-                FileMode::New(m) => {
-                    patch.push_str(&format!("new file mode {}\n", m));
+        // Add mode headers based on mode change (before --- and +++ lines)
+        if let Some(mc) = mode_change {
+            match (&mc.old_mode, &mc.new_mode) {
+                (None, Some(new)) => {
+                    // New file
+                    patch.push_str(&format!("new file mode {}\n", new));
                 }
-                FileMode::Deleted(m) => {
-                    patch.push_str(&format!("deleted file mode {}\n", m));
+                (Some(old), None) => {
+                    // Deleted file
+                    patch.push_str(&format!("deleted file mode {}\n", old));
                 }
-                FileMode::Changed { old, new } => {
+                (Some(old), Some(new)) => {
+                    // Mode change
                     patch.push_str(&format!("old mode {}\n", old));
                     patch.push_str(&format!("new mode {}\n", new));
                 }
+                (None, None) => {}
             }
         }
 
