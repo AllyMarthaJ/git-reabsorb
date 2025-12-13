@@ -70,16 +70,6 @@ impl<'a, G: GitOps> Planner<'a, G> {
         Ok(all_hunks)
     }
 
-    pub fn parse_diff_with_commit_mapping(
-        &self,
-        diff_output: &str,
-        file_to_commits: &HashMap<String, Vec<String>>,
-    ) -> Result<Vec<Hunk>, DiffParseError> {
-        let (hunks, _binary_files, _mode_changes, _file_modes) =
-            self.parse_diff_full_with_commit_mapping(diff_output, file_to_commits)?;
-        Ok(hunks)
-    }
-
     /// Parse diff with commit mapping, returning hunks, binary files, and mode changes.
     #[allow(clippy::type_complexity)]
     pub fn parse_diff_full_with_commit_mapping(
@@ -132,48 +122,8 @@ impl<'a, G: GitOps> Planner<'a, G> {
         Ok((hunks, binary_files, mode_changes, file_modes))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn draft_plan(
-        &self,
-        strategy: StrategyArg,
-        source_commits: &[SourceCommit],
-        hunks: &[Hunk],
-        file_to_commits: &HashMap<String, Vec<String>>,
-        new_files_to_commits: &HashMap<String, Vec<String>>,
-    ) -> Result<PlanDraft, ReorganizeError> {
-        self.draft_plan_with_extra_changes(
-            strategy,
-            source_commits,
-            hunks,
-            file_to_commits,
-            new_files_to_commits,
-            &[],
-            &[],
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn draft_plan_with_binary_files(
-        &self,
-        strategy: StrategyArg,
-        source_commits: &[SourceCommit],
-        hunks: &[Hunk],
-        file_to_commits: &HashMap<String, Vec<String>>,
-        new_files_to_commits: &HashMap<String, Vec<String>>,
-        binary_files: &[BinaryFile],
-    ) -> Result<PlanDraft, ReorganizeError> {
-        self.draft_plan_with_extra_changes(
-            strategy,
-            source_commits,
-            hunks,
-            file_to_commits,
-            new_files_to_commits,
-            binary_files,
-            &[],
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn draft_plan_with_extra_changes(
         &self,
         strategy: StrategyArg,
         source_commits: &[SourceCommit],

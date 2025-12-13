@@ -330,7 +330,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             info!("Found {} mode changes", mode_changes.len());
         }
 
-        let plan = planner.draft_plan_with_extra_changes(
+        let plan = planner.draft_plan(
             opts.strategy,
             &source_commits,
             &hunks,
