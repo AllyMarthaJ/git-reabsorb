@@ -242,7 +242,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         }
 
         let hunks = plan.get_working_tree_hunks();
-        let new_files_to_commits = plan.get_new_files_to_commits();
         let file_changes = plan.get_file_changes();
         let planned_commits = plan.to_planned_commits();
         print_planned_commits(
@@ -256,7 +255,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         if let Err(err) = executor.execute(
             &hunks,
             &planned_commits,
-            &new_files_to_commits,
             &file_changes,
             opts.no_verify,
             opts.no_editor,
@@ -307,8 +305,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let source_commits = planner.read_source_commits(&range.base, &range.head)?;
         info!("Found {} commits", source_commits.len());
 
-        let (file_to_commits, new_files_to_commits) =
-            planner.build_file_to_commits_map(&source_commits)?;
+        let file_to_commits = planner.build_file_to_commits_map(&source_commits)?;
 
         // Get the diff between base and head (doesn't modify working tree)
         let diff_output = self.git.diff_trees(&range.base, &range.head)?;
@@ -332,7 +329,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &source_commits,
             &hunks,
             &file_to_commits,
-            &new_files_to_commits,
             &file_changes,
         )?;
         info!("Strategy: {}", plan.strategy_name);
@@ -353,7 +349,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 &plan.planned_commits,
                 &plan.hunks,
                 &plan.file_to_commits,
-                &plan.new_files_to_commits,
                 &plan.file_changes,
             );
             self.plan_store.save(&saved_plan)?;
@@ -386,7 +381,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.planned_commits,
             &plan.hunks,
             &plan.file_to_commits,
-            &plan.new_files_to_commits,
             &plan.file_changes,
         );
         self.plan_store.save(&saved_plan)?;
@@ -398,7 +392,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         if let Err(err) = executor.execute(
             &plan.hunks,
             &plan.planned_commits,
-            &plan.new_files_to_commits,
             &plan.file_changes,
             opts.no_verify,
             opts.no_editor,

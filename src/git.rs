@@ -493,7 +493,7 @@ impl GitOps for Git {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{DiffLine, HunkId};
+    use crate::models::{ChangeType, DiffLine, FileChange, HunkId};
     use crate::patch::PatchContext;
     use std::path::PathBuf;
 
@@ -543,7 +543,16 @@ mod tests {
         let hunk = make_modification_hunk();
         // Mark file as new in range - even with modification hunks,
         // it should generate a new file patch
-        let ctx = PatchContext::new(["test.rs"]);
+        let file_changes = vec![FileChange {
+            file_path: PathBuf::from("test.rs"),
+            change_type: ChangeType::Added,
+            old_mode: None,
+            new_mode: Some("100644".to_string()),
+            is_binary: false,
+            has_content_hunks: true,
+            likely_source_commits: vec![],
+        }];
+        let ctx = PatchContext::new(&file_changes);
         let (patch, _) = ctx.generate_patch(Path::new("test.rs"), &[&hunk], false);
         assert!(patch.contains("--- /dev/null"), "Should be new file");
         assert!(patch.contains("+++ b/test.rs"));

@@ -39,12 +39,10 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &self,
         hunks: &[Hunk],
         planned_commits: &[PlannedCommit],
-        new_files_to_commits: &HashMap<String, Vec<String>>,
         file_changes: &[FileChange],
         no_verify: bool,
         no_editor: bool,
@@ -53,8 +51,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         let total = planned_commits.len();
         let start_index = plan.next_commit_index;
 
-        let patch_context =
-            PatchContext::with_file_changes(new_files_to_commits.keys(), file_changes);
+        let patch_context = PatchContext::new(file_changes);
 
         // Track which hunks have been applied (for line number adjustment)
         let mut applied_hunks_per_file: HashMap<std::path::PathBuf, Vec<Hunk>> = HashMap::new();
@@ -99,7 +96,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
 
             // Adjust hunk line numbers based on what's been applied to each file.
             // Note: Patch header generation (new/modified/deleted) is handled by
-            // PatchContext which uses new_files_to_commits and index state.
+            // PatchContext which uses file_changes and index state.
             let adjusted_hunks =
                 adjust_hunks_for_current_index(&commit_hunk_refs, &applied_hunks_per_file);
 
@@ -208,7 +205,7 @@ fn commit_message_template(desc: &CommitDescription) -> String {
 /// adjusted to account for lines added/removed by earlier hunks.
 ///
 /// Note: Patch header generation (new/modified/deleted) is handled by `PatchContext`,
-/// which uses `new_files_to_commits` and git index state. This function only adjusts
+/// which uses `file_changes` and git index state. This function only adjusts
 /// line numbers for modifications to existing files.
 fn adjust_hunks_for_current_index(
     hunks: &[&Hunk],

@@ -1493,7 +1493,6 @@ fn test_saved_plan_creation_and_roundtrip() {
         &planned,
         &hunks,
         &HashMap::new(),
-        &HashMap::new(),
         &[],
     );
 
@@ -1543,7 +1542,6 @@ fn test_save_and_load_plan() {
         head.clone(),
         &planned,
         &hunks,
-        &HashMap::new(),
         &HashMap::new(),
         &[],
     );
@@ -1604,7 +1602,6 @@ fn test_plan_progress_tracking() {
         head,
         &planned,
         &hunks,
-        &HashMap::new(),
         &HashMap::new(),
         &[],
     );
@@ -1668,7 +1665,6 @@ fn test_plan_with_new_hunks() {
         &planned,
         &hunks,
         &HashMap::new(),
-        &HashMap::new(),
         &[],
     );
 
@@ -1714,9 +1710,6 @@ fn test_plan_stores_file_mappings() {
     let mut file_to_commits = HashMap::new();
     file_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
 
-    let mut new_files_to_commits = HashMap::new();
-    new_files_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
-
     let planned = vec![PlannedCommit::new(
         CommitDescription::new("Test", "Test"),
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
@@ -1729,7 +1722,6 @@ fn test_plan_stores_file_mappings() {
         &planned,
         &hunks,
         &file_to_commits,
-        &new_files_to_commits,
         &[],
     );
 
@@ -1739,16 +1731,12 @@ fn test_plan_stores_file_mappings() {
 
     // Verify mappings are restored
     let restored_file_to_commits = loaded.get_file_to_commits();
-    let restored_new_files = loaded.get_new_files_to_commits();
 
     assert_eq!(restored_file_to_commits.len(), 1);
     assert_eq!(
         restored_file_to_commits.get("src/main.rs"),
         Some(&vec![head.clone()])
     );
-
-    assert_eq!(restored_new_files.len(), 1);
-    assert_eq!(restored_new_files.get("src/main.rs"), Some(&vec![head]));
 
     // Clean up
     delete_plan(&namespace).unwrap();

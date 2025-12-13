@@ -1,35 +1,4 @@
-//! Patch generation and application utilities.
-//!
-//! This module provides a centralized, correct implementation for generating
-//! unified diff patches from hunks. It handles all edge cases:
-//! - New files (--- /dev/null)
-//! - Deleted files (+++ /dev/null)
-//! - Modified files (normal diff)
-//! - EOF newline handling
-//! - Multiple hunks per file
-//!
-//! ## Patch Header Determination
-//!
-//! Patch headers are determined by combining two sources of information:
-//!
-//! 1. **Range context**: Whether the file is NEW in the commit range being
-//!    reabsorbed. This is tracked via `new_files_to_commits` which records
-//!    files that were created (not modified) during the range.
-//!
-//! 2. **Current index state**: Whether the file currently exists in the git
-//!    index at the time of patch application.
-//!
-//! The `PatchContext` struct tracks both to ensure correct header generation.
-//!
-//! ## Key Rule
-//!
-//! If a file is NEW in the commit range (didn't exist at base), then ANY hunks
-//! for that file must result in a "new file" patch (`--- /dev/null`), regardless
-//! of the hunk's `old_count` metadata. The hunks are transformed via
-//! `create_new_file_hunk` to extract only the content that should exist in the
-//! final file.
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::models::{ChangeType, DiffLine, FileChange, Hunk};
@@ -55,43 +24,14 @@ impl ChangeType {
     }
 }
 
-/// Context for generating patches during plan execution.
-///
-/// This struct tracks the information needed to determine correct patch headers:
-/// - Which files are NEW in the commit range (from `new_files_to_commits`)
-/// - Which files have been created by previous commits in the current execution
-/// - File changes that need to be included in patch headers
-///
-/// ## Usage
-///
-/// Create a `PatchContext` at the start of plan execution, then use
-/// `determine_change_type` for each file before generating patches.
 #[derive(Debug, Clone)]
 pub struct PatchContext {
-    new_files_in_range: HashSet<String>,
     file_changes: HashMap<String, FileChange>,
 }
 
 impl PatchContext {
-    pub fn new<S: AsRef<str>>(new_files: impl IntoIterator<Item = S>) -> Self {
+    pub fn new(file_changes: &[FileChange]) -> Self {
         Self {
-            new_files_in_range: new_files
-                .into_iter()
-                .map(|s| s.as_ref().to_string())
-                .collect(),
-            file_changes: HashMap::new(),
-        }
-    }
-
-    pub fn with_file_changes<S: AsRef<str>>(
-        new_files: impl IntoIterator<Item = S>,
-        file_changes: &[FileChange],
-    ) -> Self {
-        Self {
-            new_files_in_range: new_files
-                .into_iter()
-                .map(|s| s.as_ref().to_string())
-                .collect(),
             file_changes: file_changes
                 .iter()
                 .map(|fc| (fc.file_path.to_string_lossy().to_string(), fc.clone()))
@@ -101,7 +41,6 @@ impl PatchContext {
 
     pub fn empty() -> Self {
         Self {
-            new_files_in_range: HashSet::new(),
             file_changes: HashMap::new(),
         }
     }
@@ -117,7 +56,9 @@ impl PatchContext {
     /// created during the range being reabsorbed.
     pub fn is_new_in_range(&self, file_path: &Path) -> bool {
         let path_str = file_path.to_string_lossy();
-        self.new_files_in_range.contains(path_str.as_ref())
+        self.file_changes
+            .get(path_str.as_ref())
+            .is_some_and(|fc| fc.change_type == ChangeType::Added)
     }
 
     /// Determine the correct change type for a file.
@@ -580,10 +521,7 @@ mod tests {
         assert_eq!(ChangeType::from_hunk(&deleted), ChangeType::Deleted);
 
         let modified = make_simple_hunk();
-        assert_eq!(
-            ChangeType::from_hunk(&modified),
-            ChangeType::Modified
-        );
+        assert_eq!(ChangeType::from_hunk(&modified), ChangeType::Modified);
     }
 
     #[test]
@@ -850,6 +788,18 @@ mod tests {
     // PatchContext Tests
     // =========================================================================
 
+    fn make_new_file_change(path: &str) -> FileChange {
+        FileChange {
+            file_path: PathBuf::from(path),
+            change_type: ChangeType::Added,
+            old_mode: None,
+            new_mode: Some("100644".to_string()),
+            is_binary: false,
+            has_content_hunks: true,
+            likely_source_commits: vec![],
+        }
+    }
+
     #[test]
     fn test_patch_context_empty() {
         let ctx = PatchContext::empty();
@@ -858,7 +808,11 @@ mod tests {
 
     #[test]
     fn test_patch_context_with_new_files() {
-        let ctx = PatchContext::new(["src/new.rs", "src/other.rs"]);
+        let file_changes = vec![
+            make_new_file_change("src/new.rs"),
+            make_new_file_change("src/other.rs"),
+        ];
+        let ctx = PatchContext::new(&file_changes);
         assert!(ctx.is_new_in_range(Path::new("src/new.rs")));
         assert!(ctx.is_new_in_range(Path::new("src/other.rs")));
         assert!(!ctx.is_new_in_range(Path::new("src/existing.rs")));
@@ -886,7 +840,8 @@ mod tests {
 
     #[test]
     fn test_determine_change_type_new_file_by_range() {
-        let ctx = PatchContext::new(["src/new.rs"]);
+        let file_changes = vec![make_new_file_change("src/new.rs")];
+        let ctx = PatchContext::new(&file_changes);
         let hunk = make_simple_hunk(); // This is a modification hunk
 
         // File not in index but marked as new in range -> new
@@ -918,7 +873,8 @@ mod tests {
 
     #[test]
     fn test_generate_patch_transforms_modification_to_new_file() {
-        let ctx = PatchContext::new(["src/new.rs"]);
+        let file_changes = vec![make_new_file_change("src/new.rs")];
+        let ctx = PatchContext::new(&file_changes);
 
         // Create a modification hunk (with context and removed lines)
         let hunk = Hunk {

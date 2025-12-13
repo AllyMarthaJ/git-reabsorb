@@ -37,7 +37,6 @@ pub struct SavedPlan {
     pub next_commit_index: usize,
     pub working_tree_hunks: Vec<Hunk>,
     pub file_to_commits: Vec<(String, Vec<String>)>,
-    pub new_files_to_commits: Vec<(String, Vec<String>)>,
     #[serde(default)]
     pub file_changes: Vec<FileChange>,
 }
@@ -51,7 +50,6 @@ pub struct SavedCommit {
 }
 
 impl SavedPlan {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         strategy: String,
         base_sha: String,
@@ -59,7 +57,6 @@ impl SavedPlan {
         planned_commits: &[PlannedCommit],
         working_tree_hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
-        new_files_to_commits: &HashMap<String, Vec<String>>,
         file_changes: &[FileChange],
     ) -> Self {
         Self {
@@ -71,10 +68,6 @@ impl SavedPlan {
             next_commit_index: 0,
             working_tree_hunks: working_tree_hunks.to_vec(),
             file_to_commits: file_to_commits
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            new_files_to_commits: new_files_to_commits
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
@@ -95,10 +88,6 @@ impl SavedPlan {
 
     pub fn get_file_to_commits(&self) -> HashMap<String, Vec<String>> {
         self.file_to_commits.iter().cloned().collect()
-    }
-
-    pub fn get_new_files_to_commits(&self) -> HashMap<String, Vec<String>> {
-        self.new_files_to_commits.iter().cloned().collect()
     }
 
     pub fn get_file_changes(&self) -> Vec<FileChange> {
@@ -305,7 +294,6 @@ mod tests {
             "head".into(),
             &planned,
             std::slice::from_ref(&hunk),
-            &HashMap::new(),
             &HashMap::new(),
             &[],
         );

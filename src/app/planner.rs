@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use log::debug;
 
 use crate::cli::StrategyArg;
-use crate::diff_parser::{parse_diff, DiffParseError, Diff};
+use crate::diff_parser::{parse_diff, Diff, DiffParseError};
 use crate::git::{GitError, GitOps};
 use crate::models::{FileChange, Hunk, PlannedCommit, SourceCommit};
 use crate::reorganize::ReorganizeError;
@@ -32,9 +32,8 @@ impl<'a, G: GitOps> Planner<'a, G> {
     pub fn build_file_to_commits_map(
         &self,
         source_commits: &[SourceCommit],
-    ) -> Result<FileCommitMaps, GitError> {
+    ) -> Result<HashMap<String, Vec<String>>, GitError> {
         let mut file_to_commits: HashMap<String, Vec<String>> = HashMap::new();
-        let mut new_files_to_commits: HashMap<String, Vec<String>> = HashMap::new();
 
         for commit in source_commits {
             for file in self.git.get_files_changed_in_commit(&commit.sha)? {
@@ -43,29 +42,9 @@ impl<'a, G: GitOps> Planner<'a, G> {
                     .or_default()
                     .push(commit.sha.clone());
             }
-            for file in self.git.get_new_files_in_commit(&commit.sha)? {
-                new_files_to_commits
-                    .entry(file)
-                    .or_default()
-                    .push(commit.sha.clone());
-            }
         }
 
-        Ok((file_to_commits, new_files_to_commits))
-    }
-
-    pub fn read_hunks_from_source_commits(
-        &self,
-        source_commits: &[SourceCommit],
-    ) -> Result<Vec<Hunk>, GitError> {
-        let mut all_hunks = Vec::new();
-        let mut hunk_id = 0;
-        for commit in source_commits {
-            let hunks = self.git.read_hunks(&commit.sha, hunk_id)?;
-            hunk_id += hunks.len();
-            all_hunks.extend(hunks);
-        }
-        Ok(all_hunks)
+        Ok(file_to_commits)
     }
 
     pub fn parse_diff_full_with_commit_mapping(
@@ -103,7 +82,6 @@ impl<'a, G: GitOps> Planner<'a, G> {
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
-        new_files_to_commits: &HashMap<String, Vec<String>>,
         file_changes: &[FileChange],
     ) -> Result<PlanDraft, ReorganizeError> {
         let reorganizer = self.strategies.create(strategy);
@@ -119,7 +97,6 @@ impl<'a, G: GitOps> Planner<'a, G> {
             planned_commits,
             hunks: hunks.to_vec(),
             file_to_commits: file_to_commits.clone(),
-            new_files_to_commits: new_files_to_commits.clone(),
             file_changes: file_changes.to_vec(),
         })
     }
@@ -130,7 +107,6 @@ pub struct PlanDraft {
     pub planned_commits: Vec<PlannedCommit>,
     pub hunks: Vec<Hunk>,
     pub file_to_commits: HashMap<String, Vec<String>>,
-    pub new_files_to_commits: HashMap<String, Vec<String>>,
     pub file_changes: Vec<FileChange>,
 }
 
@@ -139,8 +115,6 @@ fn retain_non_empty(planned_commits: &mut Vec<PlannedCommit>) -> usize {
     planned_commits.retain(|c| !c.changes.is_empty());
     before - planned_commits.len()
 }
-
-type FileCommitMaps = (HashMap<String, Vec<String>>, HashMap<String, Vec<String>>);
 
 #[cfg(test)]
 mod tests {
