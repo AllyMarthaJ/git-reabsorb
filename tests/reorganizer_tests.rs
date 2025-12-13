@@ -1486,7 +1486,6 @@ fn test_saved_plan_creation_and_roundtrip() {
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
     )];
 
-    // Create SavedPlan
     let saved_plan = SavedPlan::new(
         "preserve".to_string(),
         base.clone(),
@@ -1495,7 +1494,6 @@ fn test_saved_plan_creation_and_roundtrip() {
         &hunks,
         &HashMap::new(),
         &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1547,7 +1545,6 @@ fn test_save_and_load_plan() {
         &hunks,
         &HashMap::new(),
         &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1609,7 +1606,6 @@ fn test_plan_progress_tracking() {
         &hunks,
         &HashMap::new(),
         &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1674,7 +1670,6 @@ fn test_plan_with_new_hunks() {
         &HashMap::new(),
         &HashMap::new(),
         &[],
-        &[],
     );
 
     // Save and reload
@@ -1735,7 +1730,6 @@ fn test_plan_stores_file_mappings() {
         &hunks,
         &file_to_commits,
         &new_files_to_commits,
-        &[],
         &[],
     );
 

@@ -32,53 +32,26 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::models::{DiffLine, Hunk, ModeChange};
+use crate::models::{ChangeType, DiffLine, FileChange, Hunk};
 
-/// The type of change to a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileChangeType {
-    /// File is being created (did not exist before)
-    New,
-    /// File is being modified (existed before and after)
-    Modified,
-    /// File is being deleted (will not exist after)
-    Deleted,
-}
-
-impl FileChangeType {
-    /// Determine the change type from a hunk's line counts.
-    ///
-    /// - `old_count == 0` and `new_count > 0`: New file
-    /// - `old_count > 0` and `new_count == 0`: Deleted file
-    /// - Otherwise: Modified file
-    ///
-    /// **Note**: This method only considers hunk metadata. For correct patch
-    /// generation during execution, use `PatchContext::determine_change_type`
-    /// which also considers range context and index state.
+impl ChangeType {
     #[must_use]
     pub fn from_hunk(hunk: &Hunk) -> Self {
         if hunk.old_count == 0 && hunk.new_count > 0 {
-            FileChangeType::New
+            ChangeType::Added
         } else if hunk.old_count > 0 && hunk.new_count == 0 {
-            FileChangeType::Deleted
+            ChangeType::Deleted
         } else {
-            FileChangeType::Modified
+            ChangeType::Modified
         }
     }
 
-    /// Determine the change type from multiple hunks for the same file.
-    ///
-    /// Uses the first hunk to determine the type, which should be consistent
-    /// across all hunks for the same file in a well-formed diff.
-    ///
-    /// **Note**: This method only considers hunk metadata. For correct patch
-    /// generation during execution, use `PatchContext::determine_change_type`.
     #[must_use]
     pub fn from_hunks(hunks: &[&Hunk]) -> Self {
         hunks
             .first()
             .map(|h| Self::from_hunk(h))
-            .unwrap_or(FileChangeType::Modified)
+            .unwrap_or(ChangeType::Modified)
     }
 }
 
@@ -87,7 +60,7 @@ impl FileChangeType {
 /// This struct tracks the information needed to determine correct patch headers:
 /// - Which files are NEW in the commit range (from `new_files_to_commits`)
 /// - Which files have been created by previous commits in the current execution
-/// - Mode changes that need to be included in patch headers
+/// - File changes that need to be included in patch headers
 ///
 /// ## Usage
 ///
@@ -95,57 +68,47 @@ impl FileChangeType {
 /// `determine_change_type` for each file before generating patches.
 #[derive(Debug, Clone)]
 pub struct PatchContext {
-    /// Files that are NEW in the commit range (didn't exist at base).
-    /// Key is the file path as a string.
     new_files_in_range: HashSet<String>,
-    /// Mode changes keyed by file path.
-    mode_changes: HashMap<String, ModeChange>,
+    file_changes: HashMap<String, FileChange>,
 }
 
 impl PatchContext {
-    /// Create a new patch context from the new_files_to_commits map.
-    ///
-    /// The map keys are file paths of files that were created (not just modified)
-    /// during the commit range being reabsorbed.
     pub fn new<S: AsRef<str>>(new_files: impl IntoIterator<Item = S>) -> Self {
         Self {
             new_files_in_range: new_files
                 .into_iter()
                 .map(|s| s.as_ref().to_string())
                 .collect(),
-            mode_changes: HashMap::new(),
+            file_changes: HashMap::new(),
         }
     }
 
-    /// Create a patch context with mode changes from parsed diff.
-    pub fn with_mode_changes<S: AsRef<str>>(
+    pub fn with_file_changes<S: AsRef<str>>(
         new_files: impl IntoIterator<Item = S>,
-        mode_changes: &[ModeChange],
+        file_changes: &[FileChange],
     ) -> Self {
         Self {
             new_files_in_range: new_files
                 .into_iter()
                 .map(|s| s.as_ref().to_string())
                 .collect(),
-            mode_changes: mode_changes
+            file_changes: file_changes
                 .iter()
-                .map(|mc| (mc.file_path.to_string_lossy().to_string(), mc.clone()))
+                .map(|fc| (fc.file_path.to_string_lossy().to_string(), fc.clone()))
                 .collect(),
         }
     }
 
-    /// Create an empty context (for cases where range info isn't available).
     pub fn empty() -> Self {
         Self {
             new_files_in_range: HashSet::new(),
-            mode_changes: HashMap::new(),
+            file_changes: HashMap::new(),
         }
     }
 
-    /// Get the mode change for a file, if any.
-    pub fn get_mode_change(&self, file_path: &Path) -> Option<&ModeChange> {
+    pub fn get_file_change(&self, file_path: &Path) -> Option<&FileChange> {
         let path_str = file_path.to_string_lossy();
-        self.mode_changes.get(path_str.as_ref())
+        self.file_changes.get(path_str.as_ref())
     }
 
     /// Check if a file is NEW in the commit range.
@@ -171,24 +134,24 @@ impl PatchContext {
     /// * `hunks` - The hunks being applied to this file
     ///
     /// # Returns
-    /// The `FileChangeType` to use for generating the patch headers.
+    /// The `ChangeType` to use for generating the patch headers.
     pub fn determine_change_type(
         &self,
         file_path: &Path,
         file_in_index: bool,
         hunks: &[&Hunk],
-    ) -> FileChangeType {
+    ) -> ChangeType {
         // Check if all hunks indicate deletion (new_count == 0)
         let is_deletion = hunks.iter().all(|h| h.new_count == 0);
 
         if is_deletion && file_in_index {
             // File exists and all hunks are deletions -> delete file
-            return FileChangeType::Deleted;
+            return ChangeType::Deleted;
         }
 
         if file_in_index {
             // File exists in index -> this is a modification
-            return FileChangeType::Modified;
+            return ChangeType::Modified;
         }
 
         // File doesn't exist in index. Determine if it's a new file.
@@ -200,13 +163,13 @@ impl PatchContext {
 
         // If file is NEW in the commit range, always treat as new file
         if self.is_new_in_range(file_path) {
-            return FileChangeType::New;
+            return ChangeType::Added;
         }
 
         // Check hunk metadata - if all hunks show new file, treat as new
         let hunk_indicates_new = hunks.iter().all(|h| h.old_count == 0);
         if hunk_indicates_new {
-            return FileChangeType::New;
+            return ChangeType::Added;
         }
 
         // File doesn't exist in index and has modification hunks.
@@ -215,7 +178,7 @@ impl PatchContext {
         // - Or plan is reorganized such that modification hunks come before creation
         //
         // We must treat this as a new file and transform the hunks.
-        FileChangeType::New
+        ChangeType::Added
     }
 
     /// Generate a complete patch for a file with correct headers.
@@ -238,39 +201,39 @@ impl PatchContext {
         file_path: &Path,
         hunks: &[&Hunk],
         file_in_index: bool,
-    ) -> (String, FileChangeType) {
+    ) -> (String, ChangeType) {
         let change_type = self.determine_change_type(file_path, file_in_index, hunks);
-        let mode_change = self.get_mode_change(file_path);
+        let file_change = self.get_file_change(file_path);
 
         let patch = match change_type {
-            FileChangeType::New => {
+            ChangeType::Added => {
                 // For new files, we need to transform hunks to extract only the
                 // content that should exist in the final file.
                 let new_file_hunk = PatchWriter::create_new_file_hunk(file_path, hunks);
-                PatchWriter::write_patch_with_mode_change(
+                PatchWriter::write_patch_with_file_change(
                     file_path,
                     &[&new_file_hunk],
-                    FileChangeType::New,
-                    mode_change,
+                    ChangeType::Added,
+                    file_change,
                 )
             }
-            FileChangeType::Deleted => {
+            ChangeType::Deleted => {
                 // For deletions, transform hunks to show content being removed
                 let delete_hunk = PatchWriter::create_delete_file_hunk(file_path, hunks);
-                PatchWriter::write_patch_with_mode_change(
+                PatchWriter::write_patch_with_file_change(
                     file_path,
                     &[&delete_hunk],
-                    FileChangeType::Deleted,
-                    mode_change,
+                    ChangeType::Deleted,
+                    file_change,
                 )
             }
-            FileChangeType::Modified => {
+            ChangeType::Modified => {
                 // For modifications, use hunks as-is with proper headers
-                PatchWriter::write_patch_with_mode_change(
+                PatchWriter::write_patch_with_file_change(
                     file_path,
                     hunks,
-                    FileChangeType::Modified,
-                    mode_change,
+                    ChangeType::Modified,
+                    file_change,
                 )
             }
         };
@@ -291,7 +254,7 @@ impl PatchWriter {
     /// The file change type is inferred from the hunk's line counts.
     #[must_use]
     pub fn write_single_hunk(hunk: &Hunk) -> String {
-        let change_type = FileChangeType::from_hunk(hunk);
+        let change_type = ChangeType::from_hunk(hunk);
         Self::write_patch(&hunk.file_path, &[hunk], change_type)
     }
 
@@ -301,7 +264,7 @@ impl PatchWriter {
     /// The file change type is inferred from the first hunk.
     #[must_use]
     pub fn write_multi_hunk(file_path: &Path, hunks: &[&Hunk]) -> String {
-        let change_type = FileChangeType::from_hunks(hunks);
+        let change_type = ChangeType::from_hunks(hunks);
         Self::write_patch(file_path, hunks, change_type)
     }
 
@@ -314,9 +277,9 @@ impl PatchWriter {
     pub fn write_patch<H: AsRef<Hunk>>(
         file_path: &Path,
         hunks: &[H],
-        change_type: FileChangeType,
+        change_type: ChangeType,
     ) -> String {
-        Self::write_patch_with_mode_change(file_path, hunks, change_type, None)
+        Self::write_patch_with_file_change(file_path, hunks, change_type, None)
     }
 
     /// Generate a complete patch with explicit file change type and optional mode change.
@@ -326,22 +289,22 @@ impl PatchWriter {
     /// - Deleted files: `deleted file mode <mode>`
     /// - Mode changes: `old mode <old>` + `new mode <new>`
     #[must_use]
-    pub fn write_patch_with_mode_change<H: AsRef<Hunk>>(
+    pub fn write_patch_with_file_change<H: AsRef<Hunk>>(
         file_path: &Path,
         hunks: &[H],
-        change_type: FileChangeType,
-        mode_change: Option<&ModeChange>,
+        change_type: ChangeType,
+        file_change: Option<&FileChange>,
     ) -> String {
         let mut patch = String::new();
         let path_str = file_path.to_string_lossy();
 
         // Git extended headers require the "diff --git" line first
-        if mode_change.is_some() {
+        if file_change.is_some() {
             patch.push_str(&format!("diff --git a/{} b/{}\n", path_str, path_str));
         }
 
         // Add mode headers based on mode change (before --- and +++ lines)
-        if let Some(mc) = mode_change {
+        if let Some(mc) = file_change {
             match (&mc.old_mode, &mc.new_mode) {
                 (None, Some(new)) => {
                     // New file
@@ -362,9 +325,9 @@ impl PatchWriter {
 
         // Generate file headers based on change type
         let (old_path, new_path) = match change_type {
-            FileChangeType::New => ("/dev/null".to_string(), format!("b/{}", path_str)),
-            FileChangeType::Modified => (format!("a/{}", path_str), format!("b/{}", path_str)),
-            FileChangeType::Deleted => (format!("a/{}", path_str), "/dev/null".to_string()),
+            ChangeType::Added => ("/dev/null".to_string(), format!("b/{}", path_str)),
+            ChangeType::Modified => (format!("a/{}", path_str), format!("b/{}", path_str)),
+            ChangeType::Deleted => (format!("a/{}", path_str), "/dev/null".to_string()),
         };
 
         patch.push_str(&format!("--- {}\n", old_path));
@@ -611,15 +574,15 @@ mod tests {
     #[test]
     fn test_file_change_type_from_hunk() {
         let new = make_new_file_hunk();
-        assert_eq!(FileChangeType::from_hunk(&new), FileChangeType::New);
+        assert_eq!(ChangeType::from_hunk(&new), ChangeType::Added);
 
         let deleted = make_deleted_file_hunk();
-        assert_eq!(FileChangeType::from_hunk(&deleted), FileChangeType::Deleted);
+        assert_eq!(ChangeType::from_hunk(&deleted), ChangeType::Deleted);
 
         let modified = make_simple_hunk();
         assert_eq!(
-            FileChangeType::from_hunk(&modified),
-            FileChangeType::Modified
+            ChangeType::from_hunk(&modified),
+            ChangeType::Modified
         );
     }
 
@@ -662,7 +625,7 @@ mod tests {
         let hunk = make_simple_hunk();
 
         // Force it to be treated as a new file
-        let patch = PatchWriter::write_patch(&hunk.file_path, &[&hunk], FileChangeType::New);
+        let patch = PatchWriter::write_patch(&hunk.file_path, &[&hunk], ChangeType::Added);
 
         assert!(patch.contains("--- /dev/null"));
         assert!(patch.contains("+++ b/src/main.rs"));
@@ -908,7 +871,7 @@ mod tests {
 
         // File exists in index -> modification
         let change_type = ctx.determine_change_type(Path::new("src/main.rs"), true, &[&hunk]);
-        assert_eq!(change_type, FileChangeType::Modified);
+        assert_eq!(change_type, ChangeType::Modified);
     }
 
     #[test]
@@ -918,7 +881,7 @@ mod tests {
 
         // File not in index and hunk indicates new file -> new
         let change_type = ctx.determine_change_type(Path::new("src/new.rs"), false, &[&hunk]);
-        assert_eq!(change_type, FileChangeType::New);
+        assert_eq!(change_type, ChangeType::Added);
     }
 
     #[test]
@@ -929,7 +892,7 @@ mod tests {
         // File not in index but marked as new in range -> new
         // Even though hunk looks like modification (old_count > 0)
         let change_type = ctx.determine_change_type(Path::new("src/new.rs"), false, &[&hunk]);
-        assert_eq!(change_type, FileChangeType::New);
+        assert_eq!(change_type, ChangeType::Added);
     }
 
     #[test]
@@ -940,7 +903,7 @@ mod tests {
         // File not in index, modification hunk, not marked as new in range
         // Should still become New (we can't modify a non-existent file)
         let change_type = ctx.determine_change_type(Path::new("src/main.rs"), false, &[&hunk]);
-        assert_eq!(change_type, FileChangeType::New);
+        assert_eq!(change_type, ChangeType::Added);
     }
 
     #[test]
@@ -950,7 +913,7 @@ mod tests {
 
         // File exists in index and all hunks have new_count == 0 -> deletion
         let change_type = ctx.determine_change_type(Path::new("src/old.rs"), true, &[&hunk]);
-        assert_eq!(change_type, FileChangeType::Deleted);
+        assert_eq!(change_type, ChangeType::Deleted);
     }
 
     #[test]
@@ -979,7 +942,7 @@ mod tests {
         let (patch, change_type) = ctx.generate_patch(Path::new("src/new.rs"), &[&hunk], false);
 
         // Should be treated as new file
-        assert_eq!(change_type, FileChangeType::New);
+        assert_eq!(change_type, ChangeType::Added);
         assert!(patch.contains("--- /dev/null"));
         assert!(patch.contains("+++ b/src/new.rs"));
 
@@ -997,7 +960,7 @@ mod tests {
 
         let (patch, change_type) = ctx.generate_patch(Path::new("src/old.rs"), &[&hunk], true);
 
-        assert_eq!(change_type, FileChangeType::Deleted);
+        assert_eq!(change_type, ChangeType::Deleted);
         assert!(patch.contains("--- a/src/old.rs"));
         assert!(patch.contains("+++ /dev/null"));
     }
@@ -1009,7 +972,7 @@ mod tests {
 
         let (patch, change_type) = ctx.generate_patch(Path::new("src/main.rs"), &[&hunk], true);
 
-        assert_eq!(change_type, FileChangeType::Modified);
+        assert_eq!(change_type, ChangeType::Modified);
         assert!(patch.contains("--- a/src/main.rs"));
         assert!(patch.contains("+++ b/src/main.rs"));
         // Line numbers should be preserved for modifications

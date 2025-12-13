@@ -6,7 +6,7 @@ use log::{debug, info, warn};
 use crate::cancel;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
-use crate::models::{BinaryFile, CommitDescription, Hunk, ModeChange, PlannedCommit};
+use crate::models::{CommitDescription, FileChange, Hunk, PlannedCommit};
 use crate::patch::PatchContext;
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 use crate::utils::short_sha;
@@ -45,8 +45,7 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         hunks: &[Hunk],
         planned_commits: &[PlannedCommit],
         new_files_to_commits: &HashMap<String, Vec<String>>,
-        binary_files: &[BinaryFile],
-        mode_changes: &[ModeChange],
+        file_changes: &[FileChange],
         no_verify: bool,
         no_editor: bool,
         plan: &mut SavedPlan,
@@ -54,11 +53,8 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
         let total = planned_commits.len();
         let start_index = plan.next_commit_index;
 
-        // Create patch context from new_files_to_commits and mode_changes
-        // This tells PatchContext which files are NEW in the commit range
-        // (didn't exist at base), and the mode changes for proper patch headers.
         let patch_context =
-            PatchContext::with_mode_changes(new_files_to_commits.keys(), mode_changes);
+            PatchContext::with_file_changes(new_files_to_commits.keys(), file_changes);
 
         // Track which hunks have been applied (for line number adjustment)
         let mut applied_hunks_per_file: HashMap<std::path::PathBuf, Vec<Hunk>> = HashMap::new();
@@ -107,10 +103,8 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
             let adjusted_hunks =
                 adjust_hunks_for_current_index(&commit_hunk_refs, &applied_hunks_per_file);
 
-            // Skip this commit if all its changes were already applied in previous commits
-            // AND there are no extra changes (binary files, mode changes) to apply
             let has_pending_extra_changes =
-                !extra_changes_applied && (!binary_files.is_empty() || !mode_changes.is_empty());
+                !extra_changes_applied && !file_changes.is_empty();
             if adjusted_hunks.is_empty() && !has_pending_extra_changes {
                 debug!("Skipped (all changes already applied)");
                 plan.mark_commit_created("SKIPPED".to_string());
@@ -125,17 +119,18 @@ impl<'a, G: GitOps, E: Editor, P: PlanStore> PlanExecutor<'a, G, E, P> {
                     .apply_hunks_to_index(&adjusted_refs, &patch_context)?;
             }
 
-            // Apply extra changes (binary files, mode-only changes) on the first non-skipped commit
             if !extra_changes_applied {
-                if !binary_files.is_empty() {
-                    debug!("Applying {} binary files...", binary_files.len());
-                    self.git.apply_binary_files(binary_files)?;
-                }
-                // Mode changes for files WITH content hunks are handled via patch headers.
-                // Here we only apply mode-only changes (files with no content hunks).
-                let mode_only_changes: Vec<_> = mode_changes
+                let binary_changes: Vec<_> = file_changes
                     .iter()
-                    .filter(|mc| !mc.has_content_hunks)
+                    .filter(|fc| fc.is_binary)
+                    .collect();
+                if !binary_changes.is_empty() {
+                    debug!("Applying {} binary files...", binary_changes.len());
+                    self.git.apply_binary_files(&binary_changes)?;
+                }
+                let mode_only_changes: Vec<_> = file_changes
+                    .iter()
+                    .filter(|fc| !fc.has_content_hunks && !fc.is_binary)
                     .collect();
                 if !mode_only_changes.is_empty() {
                     debug!("Applying {} mode-only changes...", mode_only_changes.len());
@@ -258,23 +253,19 @@ fn adjust_hunks_for_current_index(
     adjusted
 }
 
-/// Apply mode-only patches (files with mode changes but no content hunks).
-///
-/// This generates a minimal patch for each mode change and applies it via git apply.
 fn apply_mode_only_patches<G: GitOps>(
     git: &G,
-    mode_changes: &[&ModeChange],
+    file_changes: &[&FileChange],
 ) -> Result<(), ExecutionError> {
     use crate::git::GitError;
     use std::io::Write;
 
-    for mode_change in mode_changes {
-        // Mode-only patches require both old and new mode
-        let (Some(old), Some(new)) = (&mode_change.old_mode, &mode_change.new_mode) else {
+    for fc in file_changes {
+        let (Some(old), Some(new)) = (&fc.old_mode, &fc.new_mode) else {
             continue;
         };
 
-        let path_str = mode_change.file_path.to_string_lossy();
+        let path_str = fc.file_path.to_string_lossy();
 
         // Generate a mode-only patch
         let patch = format!(

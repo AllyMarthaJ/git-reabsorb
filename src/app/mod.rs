@@ -243,15 +243,13 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         let hunks = plan.get_working_tree_hunks();
         let new_files_to_commits = plan.get_new_files_to_commits();
-        let binary_files = plan.get_binary_files();
-        let mode_changes = plan.get_mode_changes();
+        let file_changes = plan.get_file_changes();
         let planned_commits = plan.to_planned_commits();
         print_planned_commits(
             &planned_commits[plan.next_commit_index..],
             plan.next_commit_index,
         );
 
-        // Register cancellation handler for graceful Ctrl+C cleanup
         cancel::register_handler();
 
         let executor = PlanExecutor::new(&self.git, &self.editor, &self.plan_store);
@@ -259,8 +257,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &hunks,
             &planned_commits,
             &new_files_to_commits,
-            &binary_files,
-            &mode_changes,
+            &file_changes,
             opts.no_verify,
             opts.no_editor,
             &mut plan,
@@ -315,14 +312,19 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
         // Get the diff between base and head (doesn't modify working tree)
         let diff_output = self.git.diff_trees(&range.base, &range.head)?;
-        let (hunks, binary_files, mode_changes) =
+        let (hunks, file_changes) =
             planner.parse_diff_full_with_commit_mapping(&diff_output, &file_to_commits)?;
         info!("Parsed {} hunks", hunks.len());
-        if !binary_files.is_empty() {
-            info!("Found {} binary files", binary_files.len());
+        let binary_count = file_changes.iter().filter(|fc| fc.is_binary).count();
+        if binary_count > 0 {
+            info!("Found {} binary files", binary_count);
         }
-        if !mode_changes.is_empty() {
-            info!("Found {} mode changes", mode_changes.len());
+        let mode_count = file_changes
+            .iter()
+            .filter(|fc| !fc.is_binary && !fc.has_content_hunks)
+            .count();
+        if mode_count > 0 {
+            info!("Found {} mode changes", mode_count);
         }
 
         let plan = planner.draft_plan(
@@ -331,8 +333,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &hunks,
             &file_to_commits,
             &new_files_to_commits,
-            &binary_files,
-            &mode_changes,
+            &file_changes,
         )?;
         info!("Strategy: {}", plan.strategy_name);
         print_planned_commits(&plan.planned_commits, 0);
@@ -353,8 +354,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 &plan.hunks,
                 &plan.file_to_commits,
                 &plan.new_files_to_commits,
-                &plan.binary_files,
-                &plan.mode_changes,
+                &plan.file_changes,
             );
             self.plan_store.save(&saved_plan)?;
             info!(
@@ -387,8 +387,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.hunks,
             &plan.file_to_commits,
             &plan.new_files_to_commits,
-            &plan.binary_files,
-            &plan.mode_changes,
+            &plan.file_changes,
         );
         self.plan_store.save(&saved_plan)?;
 
@@ -400,8 +399,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.hunks,
             &plan.planned_commits,
             &plan.new_files_to_commits,
-            &plan.binary_files,
-            &plan.mode_changes,
+            &plan.file_changes,
             opts.no_verify,
             opts.no_editor,
             &mut saved_plan,

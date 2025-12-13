@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::models::{BinaryChangeType, BinaryFile, DiffLine, Hunk, HunkId, ModeChange};
+use crate::models::{ChangeType, DiffLine, FileChange, Hunk, HunkId};
 
 /// Errors that can occur during diff parsing
 #[derive(Debug, thiserror::Error)]
@@ -11,57 +11,52 @@ pub enum DiffParseError {
     UnexpectedFormat(String),
 }
 
-/// Result of parsing a diff - contains text hunks, binary files, and mode changes.
+/// Result of parsing a diff - contains text hunks and file changes.
 #[derive(Debug, Default)]
-pub struct ParsedDiff {
+pub struct Diff {
     pub hunks: Vec<Hunk>,
-    pub binary_files: Vec<BinaryFile>,
-    /// All file mode information from the diff.
-    /// Includes new files, deleted files, and mode changes.
-    /// The `has_content_hunks` field indicates whether the file has associated hunks.
-    pub mode_changes: Vec<ModeChange>,
+    pub file_changes: Vec<FileChange>,
 }
 
-///
-/// Parse a unified diff output into hunks and binary file changes.
-///
 pub fn parse_diff(
     diff_output: &str,
     likely_source_commits: &[String],
     hunk_id_start: usize,
-) -> Result<ParsedDiff, DiffParseError> {
-    let mut result = ParsedDiff::default();
+) -> Result<Diff, DiffParseError> {
+    let mut result = Diff::default();
     let mut current_file: Option<PathBuf> = None;
     let mut current_hunk: Option<HunkBuilder> = None;
     let mut hunk_id = hunk_id_start;
-    // Track whether the current file is new or deleted (for binary files)
     let mut current_file_is_new = false;
     let mut current_file_is_deleted = false;
-    // Track mode changes
     let mut current_old_mode: Option<String> = None;
     let mut current_new_mode: Option<String> = None;
     let mut current_file_has_hunks = false;
     let mut current_file_is_binary = false;
 
-    let finalize_file_mode = |result: &mut ParsedDiff,
-                              file: &Option<PathBuf>,
-                              old_mode: &Option<String>,
-                              new_mode: &Option<String>,
-                              is_new: bool,
-                              is_deleted: bool,
-                              has_hunks: bool,
-                              is_binary: bool| {
+    let finalize_file_change = |result: &mut Diff,
+                                file: &Option<PathBuf>,
+                                old_mode: &Option<String>,
+                                new_mode: &Option<String>,
+                                is_new: bool,
+                                is_deleted: bool,
+                                has_hunks: bool,
+                                is_binary: bool| {
         let Some(file_path) = file else { return };
 
-        // Only store mode info if we have mode information
         let has_mode_info = old_mode.is_some() || new_mode.is_some();
-        if !has_mode_info {
+        if !has_mode_info && !is_binary {
             return;
         }
 
-        // For new files, only new_mode is set
-        // For deleted files, only old_mode is set
-        // For mode changes, both are set
+        let change_type = if is_new {
+            ChangeType::Added
+        } else if is_deleted {
+            ChangeType::Deleted
+        } else {
+            ChangeType::Modified
+        };
+
         let (old, new) = if is_new {
             (None, new_mode.clone())
         } else if is_deleted {
@@ -70,17 +65,14 @@ pub fn parse_diff(
             (old_mode.clone(), new_mode.clone())
         };
 
-        // Binary files have their mode handled when we `git add` them
-        if is_binary {
-            return;
-        }
-
-        result.mode_changes.push(ModeChange {
+        result.file_changes.push(FileChange {
             file_path: file_path.clone(),
+            change_type,
             old_mode: old,
             new_mode: new,
-            likely_source_commits: likely_source_commits.to_vec(),
+            is_binary,
             has_content_hunks: has_hunks,
+            likely_source_commits: likely_source_commits.to_vec(),
         });
     };
 
@@ -92,8 +84,7 @@ pub fn parse_diff(
                 result.hunks.push(builder.build(likely_source_commits));
             }
 
-            // Finalize file mode for the previous file
-            finalize_file_mode(
+            finalize_file_change(
                 &mut result,
                 &current_file,
                 &current_old_mode,
@@ -173,24 +164,8 @@ pub fn parse_diff(
             continue;
         }
 
-        // Handle binary files
         if line.starts_with("Binary files") {
             current_file_is_binary = true;
-            if let Some(ref file_path) = current_file {
-                let change_type = if current_file_is_new {
-                    BinaryChangeType::Added
-                } else if current_file_is_deleted {
-                    BinaryChangeType::Deleted
-                } else {
-                    BinaryChangeType::Modified
-                };
-
-                result.binary_files.push(BinaryFile {
-                    file_path: file_path.clone(),
-                    change_type,
-                    likely_source_commits: likely_source_commits.to_vec(),
-                });
-            }
             continue;
         }
 
@@ -262,8 +237,7 @@ pub fn parse_diff(
         result.hunks.push(builder.build(likely_source_commits));
     }
 
-    // Finalize file mode for the last file
-    finalize_file_mode(
+    finalize_file_change(
         &mut result,
         &current_file,
         &current_old_mode,
@@ -576,11 +550,15 @@ Binary files /dev/null and b/image.png differ
 
         let result = parse_diff(diff, &["commit1".to_string()], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
-        assert_eq!(result.binary_files.len(), 1);
-        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
-        assert_eq!(result.binary_files[0].change_type, BinaryChangeType::Added);
+        assert_eq!(result.file_changes.len(), 1);
         assert_eq!(
-            result.binary_files[0].likely_source_commits,
+            result.file_changes[0].file_path,
+            PathBuf::from("image.png")
+        );
+        assert_eq!(result.file_changes[0].change_type, ChangeType::Added);
+        assert!(result.file_changes[0].is_binary);
+        assert_eq!(
+            result.file_changes[0].likely_source_commits,
             vec!["commit1".to_string()]
         );
     }
@@ -594,12 +572,13 @@ Binary files a/image.png and b/image.png differ
 
         let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
-        assert_eq!(result.binary_files.len(), 1);
-        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+        assert_eq!(result.file_changes.len(), 1);
         assert_eq!(
-            result.binary_files[0].change_type,
-            BinaryChangeType::Modified
+            result.file_changes[0].file_path,
+            PathBuf::from("image.png")
         );
+        assert_eq!(result.file_changes[0].change_type, ChangeType::Modified);
+        assert!(result.file_changes[0].is_binary);
     }
 
     #[test]
@@ -612,12 +591,13 @@ Binary files a/image.png and /dev/null differ
 
         let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
-        assert_eq!(result.binary_files.len(), 1);
-        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+        assert_eq!(result.file_changes.len(), 1);
         assert_eq!(
-            result.binary_files[0].change_type,
-            BinaryChangeType::Deleted
+            result.file_changes[0].file_path,
+            PathBuf::from("image.png")
         );
+        assert_eq!(result.file_changes[0].change_type, ChangeType::Deleted);
+        assert!(result.file_changes[0].is_binary);
     }
 
     #[test]
@@ -643,10 +623,14 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 2);
-        assert_eq!(result.binary_files.len(), 1);
+        assert_eq!(result.file_changes.len(), 1);
         assert_eq!(result.hunks[0].file_path, PathBuf::from("src/main.rs"));
         assert_eq!(result.hunks[1].file_path, PathBuf::from("src/lib.rs"));
-        assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
+        assert_eq!(
+            result.file_changes[0].file_path,
+            PathBuf::from("image.png")
+        );
+        assert!(result.file_changes[0].is_binary);
     }
 
     #[test]
@@ -658,14 +642,24 @@ new mode 100755
 
         let result = parse_diff(diff, &["commit1".to_string()], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
-        assert_eq!(result.binary_files.len(), 0);
-        assert_eq!(result.mode_changes.len(), 1);
-        assert_eq!(result.mode_changes[0].file_path, PathBuf::from("script.sh"));
-        assert_eq!(result.mode_changes[0].old_mode, Some("100644".to_string()));
-        assert_eq!(result.mode_changes[0].new_mode, Some("100755".to_string()));
-        assert!(!result.mode_changes[0].has_content_hunks);
+        assert_eq!(result.file_changes.len(), 1);
         assert_eq!(
-            result.mode_changes[0].likely_source_commits,
+            result.file_changes[0].file_path,
+            PathBuf::from("script.sh")
+        );
+        assert_eq!(result.file_changes[0].change_type, ChangeType::Modified);
+        assert_eq!(
+            result.file_changes[0].old_mode,
+            Some("100644".to_string())
+        );
+        assert_eq!(
+            result.file_changes[0].new_mode,
+            Some("100755".to_string())
+        );
+        assert!(!result.file_changes[0].is_binary);
+        assert!(!result.file_changes[0].has_content_hunks);
+        assert_eq!(
+            result.file_changes[0].likely_source_commits,
             vec!["commit1".to_string()]
         );
     }
@@ -685,12 +679,21 @@ index 1234567..abcdefg
 
         let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 1);
-        assert_eq!(result.binary_files.len(), 0);
-        assert_eq!(result.mode_changes.len(), 1);
-        assert_eq!(result.mode_changes[0].file_path, PathBuf::from("script.sh"));
-        assert_eq!(result.mode_changes[0].old_mode, Some("100644".to_string()));
-        assert_eq!(result.mode_changes[0].new_mode, Some("100755".to_string()));
-        assert!(result.mode_changes[0].has_content_hunks);
+        assert_eq!(result.file_changes.len(), 1);
+        assert_eq!(
+            result.file_changes[0].file_path,
+            PathBuf::from("script.sh")
+        );
+        assert_eq!(result.file_changes[0].change_type, ChangeType::Modified);
+        assert_eq!(
+            result.file_changes[0].old_mode,
+            Some("100644".to_string())
+        );
+        assert_eq!(
+            result.file_changes[0].new_mode,
+            Some("100755".to_string())
+        );
+        assert!(result.file_changes[0].has_content_hunks);
     }
 
     #[test]
@@ -704,13 +707,13 @@ new mode 100755
 "#;
 
         let result = parse_diff(diff, &[], 0).unwrap();
-        assert_eq!(result.mode_changes.len(), 2);
+        assert_eq!(result.file_changes.len(), 2);
         assert_eq!(
-            result.mode_changes[0].file_path,
+            result.file_changes[0].file_path,
             PathBuf::from("script1.sh")
         );
         assert_eq!(
-            result.mode_changes[1].file_path,
+            result.file_changes[1].file_path,
             PathBuf::from("script2.sh")
         );
     }

@@ -117,12 +117,9 @@ pub trait GitOps {
     fn run_git_output(&self, args: &[&str]) -> Result<String, GitError>;
 
     /// Apply binary file changes to the index.
-    ///
-    /// For added/modified binary files, this stages them from the working tree.
-    /// For deleted binary files, this removes them from the index.
     fn apply_binary_files(
         &self,
-        binary_files: &[crate::models::BinaryFile],
+        binary_files: &[&crate::models::FileChange],
     ) -> Result<(), GitError>;
 }
 
@@ -472,20 +469,18 @@ impl GitOps for Git {
 
     fn apply_binary_files(
         &self,
-        binary_files: &[crate::models::BinaryFile],
+        binary_files: &[&crate::models::FileChange],
     ) -> Result<(), GitError> {
-        use crate::models::BinaryChangeType;
+        use crate::models::ChangeType;
 
-        for binary_file in binary_files {
-            let path_str = binary_file.file_path.to_str().unwrap();
+        for fc in binary_files {
+            let path_str = fc.file_path.to_str().unwrap();
 
-            match binary_file.change_type {
-                BinaryChangeType::Added | BinaryChangeType::Modified => {
-                    // Stage the binary file from the working tree
+            match fc.change_type {
+                ChangeType::Added | ChangeType::Modified => {
                     self.run_git(&["add", "--", path_str])?;
                 }
-                BinaryChangeType::Deleted => {
-                    // Remove the binary file from the index
+                ChangeType::Deleted => {
                     self.run_git(&["rm", "--cached", "--", path_str])?;
                 }
             }

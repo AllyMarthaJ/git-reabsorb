@@ -28,50 +28,27 @@ impl SourceCommit {
     }
 }
 
-/// A binary file change that cannot be represented as hunks.
-///
-/// Binary files don't have line-based diffs, so they're tracked separately.
-/// During execution, they're applied by copying from the working tree or
-/// removing from the index.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BinaryFile {
-    #[serde(with = "path_serde")]
-    pub file_path: PathBuf,
-    pub change_type: BinaryChangeType,
-    /// Source commits that introduced this binary file change.
-    pub likely_source_commits: Vec<String>,
-}
-
-/// The type of change for a binary file.
+/// The type of change to a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BinaryChangeType {
-    /// New binary file being added
+pub enum ChangeType {
     Added,
-    /// Existing binary file being modified
     Modified,
-    /// Binary file being deleted
     Deleted,
 }
 
-/// A file mode change (e.g., making a file executable, or new/deleted file modes).
-///
-/// This struct represents mode information for files in a diff:
-/// - New file: `old_mode = None`, `new_mode = Some(...)`
-/// - Deleted file: `old_mode = Some(...)`, `new_mode = None`
-/// - Mode change: `old_mode = Some(...)`, `new_mode = Some(...)`
+/// A file change tracking mode, binary status, and change type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModeChange {
+pub struct FileChange {
     #[serde(with = "path_serde")]
     pub file_path: PathBuf,
-    /// The old file mode (e.g., "100644"). None for new files.
+    pub change_type: ChangeType,
     pub old_mode: Option<String>,
-    /// The new file mode (e.g., "100755"). None for deleted files.
     pub new_mode: Option<String>,
-    /// Source commits that introduced this mode change.
-    pub likely_source_commits: Vec<String>,
-    /// Whether this file has content hunks (hunks handle their own patch headers).
+    #[serde(default)]
+    pub is_binary: bool,
     #[serde(default)]
     pub has_content_hunks: bool,
+    pub likely_source_commits: Vec<String>,
 }
 
 /// A single line in a diff

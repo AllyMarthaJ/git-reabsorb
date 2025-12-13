@@ -10,9 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{
-    BinaryFile, CommitDescription, Hunk, ModeChange, PlannedChange, PlannedCommit,
-};
+use crate::models::{CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit};
 
 const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
@@ -40,12 +38,8 @@ pub struct SavedPlan {
     pub working_tree_hunks: Vec<Hunk>,
     pub file_to_commits: Vec<(String, Vec<String>)>,
     pub new_files_to_commits: Vec<(String, Vec<String>)>,
-    /// Binary files that cannot be represented as hunks.
     #[serde(default)]
-    pub binary_files: Vec<BinaryFile>,
-    /// Mode-only changes (e.g., making files executable).
-    #[serde(default)]
-    pub mode_changes: Vec<ModeChange>,
+    pub file_changes: Vec<FileChange>,
 }
 
 /// A single commit in a saved plan.
@@ -66,8 +60,7 @@ impl SavedPlan {
         working_tree_hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
         new_files_to_commits: &HashMap<String, Vec<String>>,
-        binary_files: &[BinaryFile],
-        mode_changes: &[ModeChange],
+        file_changes: &[FileChange],
     ) -> Self {
         Self {
             version: 1,
@@ -85,8 +78,7 @@ impl SavedPlan {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
-            binary_files: binary_files.to_vec(),
-            mode_changes: mode_changes.to_vec(),
+            file_changes: file_changes.to_vec(),
         }
     }
 
@@ -109,12 +101,8 @@ impl SavedPlan {
         self.new_files_to_commits.iter().cloned().collect()
     }
 
-    pub fn get_binary_files(&self) -> Vec<BinaryFile> {
-        self.binary_files.clone()
-    }
-
-    pub fn get_mode_changes(&self) -> Vec<ModeChange> {
-        self.mode_changes.clone()
+    pub fn get_file_changes(&self) -> Vec<FileChange> {
+        self.file_changes.clone()
     }
 
     pub fn remaining_commits(&self) -> &[SavedCommit] {
@@ -319,7 +307,6 @@ mod tests {
             std::slice::from_ref(&hunk),
             &HashMap::new(),
             &HashMap::new(),
-            &[],
             &[],
         );
 
