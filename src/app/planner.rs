@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use log::debug;
 
 use crate::cli::StrategyArg;
-use crate::diff_parser::{parse_diff_full, DiffParseError, ParsedDiff};
+use crate::diff_parser::{parse_diff, DiffParseError, ParsedDiff};
 use crate::git::{GitError, GitOps};
 use crate::models::{BinaryFile, Hunk, ModeChange, PlannedCommit, SourceCommit};
 use crate::patch::FileMode;
@@ -90,7 +90,7 @@ impl<'a, G: GitOps> Planner<'a, G> {
             mut binary_files,
             mut mode_changes,
             file_modes,
-        } = parse_diff_full(diff_output, &[], 0)?;
+        } = parse_diff(diff_output, &[], 0)?;
 
         // Map hunks to their source commits
         for hunk in &mut hunks {

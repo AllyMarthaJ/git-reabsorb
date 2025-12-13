@@ -1123,7 +1123,9 @@ fn helper_two() {
 
     // Parse hunks from working tree
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // Should have multiple hunks (depending on git's diff algorithm)
     // The key is that they all apply cleanly when grouped
@@ -1187,7 +1189,9 @@ fn test_hunks_sorted_by_line_number_before_apply() {
 
     // Parse hunks
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // Even if hunks come in any order, they should apply correctly
     // because apply_hunks_to_index sorts them
@@ -1393,7 +1397,9 @@ fn test_apply_single_hunk_to_index() {
 
     // Parse the hunk
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
     assert!(!hunks.is_empty());
 
     // Apply single hunk
@@ -1426,7 +1432,9 @@ fn test_apply_hunks_from_multiple_files() {
 
     // Parse hunks
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
     assert_eq!(hunks.len(), 2);
 
     // Apply all hunks together
@@ -1834,7 +1842,9 @@ fn helper_two() {
 
     // Parse hunks from working tree diff
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // We need at least 2 hunks to test splitting
     assert!(
@@ -1942,7 +1952,9 @@ fn function_b() {
 
     // Parse the diff
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // With enough spacing, we should get 2 separate hunks
     assert!(
@@ -2036,7 +2048,8 @@ impl Calculator {
     let diff = repo.git.get_working_tree_diff().unwrap();
     let hunks =
         git_reabsorb::diff_parser::parse_diff(&diff, std::slice::from_ref(&original_head), 0)
-            .unwrap();
+            .unwrap()
+            .hunks;
 
     // The hunks should reference the original commit
     for hunk in &hunks {
@@ -2166,7 +2179,9 @@ fn test_diff_trees_produces_parseable_hunks_for_new_files() {
     let diff_output = repo.git.diff_trees(&base, &head).unwrap();
 
     // Parse hunks from the diff
-    let hunks = parse_diff(&diff_output, std::slice::from_ref(&head), 0).unwrap();
+    let hunks = parse_diff(&diff_output, std::slice::from_ref(&head), 0)
+        .unwrap()
+        .hunks;
 
     // Should have hunks for both new files
     let github_hunks: Vec<_> = hunks
@@ -2453,7 +2468,9 @@ fn test_reorder_commits_creating_new_file_from_modifications() {
 
     // Get hunks using diff_trees (base to HEAD)
     let diff = repo.git.diff_trees(&base, "HEAD").unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // The diff should show file.txt as a new file with final content
     let file_hunks: Vec<_> = hunks

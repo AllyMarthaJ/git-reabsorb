@@ -26,28 +26,10 @@ pub struct ParsedDiff {
     pub file_modes: HashMap<PathBuf, FileMode>,
 }
 
-/// Parse a unified diff output into hunks.
 ///
-/// `likely_source_commits` is a list of commit SHAs that likely contributed
-/// to these hunks. For single-commit diffs (like `git show`), this is just
-/// that commit. For working tree diffs, this can be determined by analyzing
-/// which commits touched each file.
-///
-/// Note: This function ignores binary files. Use `parse_diff_full` if you need
-/// to track binary file changes as well.
-pub fn parse_diff(
-    diff_output: &str,
-    likely_source_commits: &[String],
-    hunk_id_start: usize,
-) -> Result<Vec<Hunk>, DiffParseError> {
-    parse_diff_full(diff_output, likely_source_commits, hunk_id_start).map(|r| r.hunks)
-}
-
 /// Parse a unified diff output into hunks and binary file changes.
 ///
-/// This is the full version that tracks both text hunks and binary file changes.
-/// Use `parse_diff` if you only need text hunks.
-pub fn parse_diff_full(
+pub fn parse_diff(
     diff_output: &str,
     likely_source_commits: &[String],
     hunk_id_start: usize,
@@ -405,7 +387,7 @@ index 1234567..abcdefg 100644
  }
 "#;
 
-        let hunks = parse_diff(diff, &["abc123".to_string()], 0).unwrap();
+        let hunks = parse_diff(diff, &["abc123".to_string()], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].file_path, PathBuf::from("src/main.rs"));
         assert_eq!(hunks[0].old_start, 1);
@@ -437,7 +419,7 @@ index 1234567..abcdefg 100644
 "#;
 
         let source_commits = vec!["commit1".to_string(), "commit2".to_string()];
-        let hunks = parse_diff(diff, &source_commits, 0).unwrap();
+        let hunks = parse_diff(diff, &source_commits, 0).unwrap().hunks;
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].likely_source_commits, source_commits);
     }
@@ -458,7 +440,7 @@ index 1234567..abcdefg 100644
  }
 "#;
 
-        let hunks = parse_diff(diff, &[], 0).unwrap();
+        let hunks = parse_diff(diff, &[], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 2);
         // Both hunks should be for the same file
         assert_eq!(hunks[0].file_path, hunks[1].file_path);
@@ -486,7 +468,7 @@ diff --git a/src/lib.rs b/src/lib.rs
  }
 "#;
 
-        let hunks = parse_diff(diff, &[], 0).unwrap();
+        let hunks = parse_diff(diff, &[], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].file_path, PathBuf::from("src/main.rs"));
         assert_eq!(hunks[1].file_path, PathBuf::from("src/lib.rs"));
@@ -505,7 +487,7 @@ index 0000000..1234567
 +}
 "#;
 
-        let hunks = parse_diff(diff, &[], 0).unwrap();
+        let hunks = parse_diff(diff, &[], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].file_path, PathBuf::from("src/new.rs"));
         // New file: old_start and old_count should be 0
@@ -528,7 +510,7 @@ index 1234567..0000000
 -}
 "#;
 
-        let hunks = parse_diff(diff, &[], 0).unwrap();
+        let hunks = parse_diff(diff, &[], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 1);
         // File path should come from the --- line or diff header
         assert_eq!(hunks[0].old_start, 1);
@@ -551,7 +533,7 @@ index 1234567..0000000
  }
 "#;
 
-        let hunks = parse_diff(diff, &[], 0).unwrap();
+        let hunks = parse_diff(diff, &[], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_start, 5);
         assert_eq!(hunks[0].old_count, 6);
@@ -569,7 +551,7 @@ index 1234567..0000000
 +line2
 "#;
 
-        let hunks = parse_diff(diff, &[], 0).unwrap();
+        let hunks = parse_diff(diff, &[], 0).unwrap().hunks;
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].likely_source_commits.is_empty());
     }
@@ -591,7 +573,7 @@ diff --git a/b.rs b/b.rs
 "#;
 
         // Start from hunk_id 100
-        let hunks = parse_diff(diff, &[], 100).unwrap();
+        let hunks = parse_diff(diff, &[], 100).unwrap().hunks;
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].id.0, 100);
         assert_eq!(hunks[1].id.0, 101);
@@ -605,7 +587,7 @@ index 0000000..abcdefg
 Binary files /dev/null and b/image.png differ
 "#;
 
-        let result = parse_diff_full(diff, &["commit1".to_string()], 0).unwrap();
+        let result = parse_diff(diff, &["commit1".to_string()], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
         assert_eq!(result.binary_files.len(), 1);
         assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
@@ -623,7 +605,7 @@ index 1234567..abcdefg 100644
 Binary files a/image.png and b/image.png differ
 "#;
 
-        let result = parse_diff_full(diff, &[], 0).unwrap();
+        let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
         assert_eq!(result.binary_files.len(), 1);
         assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
@@ -641,7 +623,7 @@ index abcdefg..0000000
 Binary files a/image.png and /dev/null differ
 "#;
 
-        let result = parse_diff_full(diff, &[], 0).unwrap();
+        let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
         assert_eq!(result.binary_files.len(), 1);
         assert_eq!(result.binary_files[0].file_path, PathBuf::from("image.png"));
@@ -672,7 +654,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 +pub fn bar() {}
 "#;
 
-        let result = parse_diff_full(diff, &[], 0).unwrap();
+        let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 2);
         assert_eq!(result.binary_files.len(), 1);
         assert_eq!(result.hunks[0].file_path, PathBuf::from("src/main.rs"));
@@ -687,7 +669,7 @@ old mode 100644
 new mode 100755
 "#;
 
-        let result = parse_diff_full(diff, &["commit1".to_string()], 0).unwrap();
+        let result = parse_diff(diff, &["commit1".to_string()], 0).unwrap();
         assert_eq!(result.hunks.len(), 0);
         assert_eq!(result.binary_files.len(), 0);
         assert_eq!(result.mode_changes.len(), 1);
@@ -716,7 +698,7 @@ index 1234567..abcdefg
 +echo "world"
 "#;
 
-        let result = parse_diff_full(diff, &[], 0).unwrap();
+        let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.hunks.len(), 1);
         assert_eq!(result.binary_files.len(), 0);
         // mode_changes is empty because this file has content hunks
@@ -743,7 +725,7 @@ old mode 100644
 new mode 100755
 "#;
 
-        let result = parse_diff_full(diff, &[], 0).unwrap();
+        let result = parse_diff(diff, &[], 0).unwrap();
         assert_eq!(result.mode_changes.len(), 2);
         assert_eq!(
             result.mode_changes[0].file_path,

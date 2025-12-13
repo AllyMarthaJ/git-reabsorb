@@ -255,7 +255,7 @@ impl GitOps for Git {
         // Get diff for this commit against its parent
         let diff_output = self.run_git(&["show", "--format=", "-p", commit_sha])?;
 
-        let hunks = parse_diff(&diff_output, &[commit_sha.to_string()], hunk_id_start)?;
+        let hunks = parse_diff(&diff_output, &[commit_sha.to_string()], hunk_id_start)?.hunks;
         Ok(hunks)
     }
 
