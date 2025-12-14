@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    fmt::{Display, Formatter},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,44 +31,41 @@ impl SourceCommit {
     }
 }
 
-/// A binary file change that cannot be represented as hunks.
-///
-/// Binary files don't have line-based diffs, so they're tracked separately.
-/// During execution, they're applied by copying from the working tree or
-/// removing from the index.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BinaryFile {
-    #[serde(with = "path_serde")]
-    pub file_path: PathBuf,
-    pub change_type: BinaryChangeType,
-    /// Source commits that introduced this binary file change.
-    pub likely_source_commits: Vec<String>,
-}
-
-/// The type of change for a binary file.
+/// The type of change to a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BinaryChangeType {
-    /// New binary file being added
+pub enum ChangeType {
     Added,
-    /// Existing binary file being modified
     Modified,
-    /// Binary file being deleted
     Deleted,
 }
 
-/// A file mode change (e.g., making a file executable).
-///
-/// Mode-only changes don't have content diffs, so they're tracked separately.
+/// A file change tracking mode, binary status, and change type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModeChange {
+pub struct FileChange {
     #[serde(with = "path_serde")]
     pub file_path: PathBuf,
-    /// The old file mode (e.g., "100644")
-    pub old_mode: String,
-    /// The new file mode (e.g., "100755")
-    pub new_mode: String,
-    /// Source commits that introduced this mode change.
+    pub change_type: ChangeType,
+    pub old_mode: Option<String>,
+    pub new_mode: Option<String>,
+    #[serde(default)]
+    pub is_binary: bool,
+    #[serde(default)]
+    pub has_content_hunks: bool,
     pub likely_source_commits: Vec<String>,
+}
+
+impl FileChange {
+    pub fn with_path(path: PathBuf) -> Self {
+        Self {
+            file_path: path,
+            change_type: ChangeType::Modified,
+            old_mode: None,
+            new_mode: None,
+            is_binary: false,
+            has_content_hunks: false,
+            likely_source_commits: vec![],
+        }
+    }
 }
 
 /// A single line in a diff
@@ -182,6 +182,23 @@ impl CommitDescription {
             short: s.clone(),
             long: s,
         }
+    }
+}
+
+impl Display for CommitDescription {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let short = self.short.trim();
+        let long = self.long.trim();
+
+        if long.is_empty() || long == short {
+            return write!(f, "{}", short);
+        }
+
+        if self.long.starts_with(short) {
+            return write!(f, "{}", self.long);
+        }
+
+        write!(f, "{}\n\n{}", short, long)
     }
 }
 
@@ -397,6 +414,24 @@ mod tests {
         let desc = CommitDescription::short_only("Just a short message");
         assert_eq!(desc.short, "Just a short message");
         assert_eq!(desc.long, "Just a short message");
+    }
+
+    #[test]
+    fn test_commit_description_to_message_short_only() {
+        let desc = CommitDescription::short_only("fix bug");
+        assert_eq!(desc.to_string(), "fix bug");
+    }
+
+    #[test]
+    fn test_commit_description_to_message_short_and_body() {
+        let desc = CommitDescription::new("feat", "add feature details");
+        assert_eq!(desc.to_string(), "feat\n\nadd feature details");
+    }
+
+    #[test]
+    fn test_commit_description_to_message_long_contains_short() {
+        let desc = CommitDescription::new("feat", "feat\n\nadd more");
+        assert_eq!(desc.to_string(), "feat\n\nadd more");
     }
 
     #[test]
