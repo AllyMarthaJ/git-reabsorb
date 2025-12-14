@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::diff_parser::parse_diff;
 use crate::models::{Hunk, SourceCommit};
+use crate::patch::parse;
 
 /// Errors from git operations
 #[derive(Debug, thiserror::Error)]
@@ -20,7 +20,7 @@ pub enum GitError {
     #[error("No commits found in range {0}")]
     NoCommitsInRange(String),
     #[error("Failed to parse diff: {0}")]
-    DiffParseError(#[from] crate::diff_parser::DiffParseError),
+    DiffParseError(#[from] crate::patch::ParseError),
     #[error("No pre-reabsorb state saved. Run 'git reabsorb plan' first.")]
     NoSavedState,
 }
@@ -117,13 +117,7 @@ pub trait GitOps {
     fn run_git_output(&self, args: &[&str]) -> Result<String, GitError>;
 
     /// Apply binary file changes to the index.
-    ///
-    /// For added/modified binary files, this stages them from the working tree.
-    /// For deleted binary files, this removes them from the index.
-    fn apply_binary_files(
-        &self,
-        binary_files: &[crate::models::BinaryFile],
-    ) -> Result<(), GitError>;
+    fn apply_binary_files(&self, changes: &[&crate::models::FileChange]) -> Result<(), GitError>;
 }
 
 /// Real implementation of GitOps that calls git commands
@@ -255,7 +249,7 @@ impl GitOps for Git {
         // Get diff for this commit against its parent
         let diff_output = self.run_git(&["show", "--format=", "-p", commit_sha])?;
 
-        let hunks = parse_diff(&diff_output, &[commit_sha.to_string()], hunk_id_start)?;
+        let hunks = parse(&diff_output, &[commit_sha.to_string()], hunk_id_start)?.hunks;
         Ok(hunks)
     }
 
@@ -470,22 +464,19 @@ impl GitOps for Git {
         self.run_git(args)
     }
 
-    fn apply_binary_files(
-        &self,
-        binary_files: &[crate::models::BinaryFile],
-    ) -> Result<(), GitError> {
-        use crate::models::BinaryChangeType;
+    fn apply_binary_files(&self, changes: &[&crate::models::FileChange]) -> Result<(), GitError> {
+        use crate::models::ChangeType;
 
-        for binary_file in binary_files {
-            let path_str = binary_file.file_path.to_str().unwrap();
+        let binary_changes: Vec<_> = changes.iter().filter(|fc| fc.is_binary).collect();
 
-            match binary_file.change_type {
-                BinaryChangeType::Added | BinaryChangeType::Modified => {
-                    // Stage the binary file from the working tree
+        for fc in binary_changes {
+            let path_str = fc.file_path.to_str().unwrap();
+
+            match fc.change_type {
+                ChangeType::Added | ChangeType::Modified => {
                     self.run_git(&["add", "--", path_str])?;
                 }
-                BinaryChangeType::Deleted => {
-                    // Remove the binary file from the index
+                ChangeType::Deleted => {
                     self.run_git(&["rm", "--cached", "--", path_str])?;
                 }
             }
@@ -498,7 +489,7 @@ impl GitOps for Git {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{DiffLine, HunkId};
+    use crate::models::{ChangeType, DiffLine, FileChange, HunkId};
     use crate::patch::PatchContext;
     use std::path::PathBuf;
 
@@ -548,7 +539,16 @@ mod tests {
         let hunk = make_modification_hunk();
         // Mark file as new in range - even with modification hunks,
         // it should generate a new file patch
-        let ctx = PatchContext::new(["test.rs"]);
+        let file_changes = vec![FileChange {
+            file_path: PathBuf::from("test.rs"),
+            change_type: ChangeType::Added,
+            old_mode: None,
+            new_mode: Some("100644".to_string()),
+            is_binary: false,
+            has_content_hunks: true,
+            likely_source_commits: vec![],
+        }];
+        let ctx = PatchContext::new(&file_changes);
         let (patch, _) = ctx.generate_patch(Path::new("test.rs"), &[&hunk], false);
         assert!(patch.contains("--- /dev/null"), "Should be new file");
         assert!(patch.contains("+++ b/test.rs"));
