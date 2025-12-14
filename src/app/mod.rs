@@ -8,7 +8,7 @@ use crate::cancel;
 use crate::cli::{
     ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs, StrategyArg,
 };
-use crate::diff_parser::DiffParseError;
+use crate::patch::ParseError;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
 use crate::llm::LlmConfig;
@@ -108,7 +108,7 @@ pub enum AppError {
     #[error(transparent)]
     Reorg(#[from] ReorganizeError),
     #[error(transparent)]
-    Diff(#[from] DiffParseError),
+    Parse(#[from] ParseError),
     #[error(transparent)]
     Execution(#[from] ExecutionError),
     #[error(transparent)]
@@ -242,30 +242,20 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         }
 
         let hunks = plan.get_working_tree_hunks();
-        let new_files_to_commits = plan.get_new_files_to_commits();
-        let binary_files = plan.get_binary_files();
-        let mode_changes = plan.get_mode_changes();
+        let file_changes = plan.get_file_changes();
         let planned_commits = plan.to_planned_commits();
         print_planned_commits(
             &planned_commits[plan.next_commit_index..],
             plan.next_commit_index,
         );
 
-        // Note: file_modes aren't stored in saved plans, so we use an empty map on resume.
-        // Mode changes for files with content are handled via mode_changes list.
-        let file_modes = std::collections::HashMap::new();
-
-        // Register cancellation handler for graceful Ctrl+C cleanup
         cancel::register_handler();
 
         let executor = PlanExecutor::new(&self.git, &self.editor, &self.plan_store);
         if let Err(err) = executor.execute(
             &hunks,
             &planned_commits,
-            &new_files_to_commits,
-            &binary_files,
-            &mode_changes,
-            &file_modes,
+            &file_changes,
             opts.no_verify,
             opts.no_editor,
             &mut plan,
@@ -315,29 +305,31 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let source_commits = planner.read_source_commits(&range.base, &range.head)?;
         info!("Found {} commits", source_commits.len());
 
-        let (file_to_commits, new_files_to_commits) =
-            planner.build_file_to_commits_map(&source_commits)?;
+        let file_to_commits = planner.build_file_to_commits_map(&source_commits)?;
 
         // Get the diff between base and head (doesn't modify working tree)
         let diff_output = self.git.diff_trees(&range.base, &range.head)?;
-        let (hunks, binary_files, mode_changes, file_modes) =
+        let (hunks, file_changes) =
             planner.parse_diff_full_with_commit_mapping(&diff_output, &file_to_commits)?;
         info!("Parsed {} hunks", hunks.len());
-        if !binary_files.is_empty() {
-            info!("Found {} binary files", binary_files.len());
+        let binary_count = file_changes.iter().filter(|fc| fc.is_binary).count();
+        if binary_count > 0 {
+            info!("Found {} binary files", binary_count);
         }
-        if !mode_changes.is_empty() {
-            info!("Found {} mode changes", mode_changes.len());
+        let mode_count = file_changes
+            .iter()
+            .filter(|fc| !fc.is_binary && !fc.has_content_hunks)
+            .count();
+        if mode_count > 0 {
+            info!("Found {} mode changes", mode_count);
         }
 
-        let plan = planner.draft_plan_with_extra_changes(
+        let plan = planner.draft_plan(
             opts.strategy,
             &source_commits,
             &hunks,
             &file_to_commits,
-            &new_files_to_commits,
-            &binary_files,
-            &mode_changes,
+            &file_changes,
         )?;
         info!("Strategy: {}", plan.strategy_name);
         print_planned_commits(&plan.planned_commits, 0);
@@ -357,9 +349,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 &plan.planned_commits,
                 &plan.hunks,
                 &plan.file_to_commits,
-                &plan.new_files_to_commits,
-                &plan.binary_files,
-                &plan.mode_changes,
+                &plan.file_changes,
             );
             self.plan_store.save(&saved_plan)?;
             info!(
@@ -391,9 +381,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &plan.planned_commits,
             &plan.hunks,
             &plan.file_to_commits,
-            &plan.new_files_to_commits,
-            &plan.binary_files,
-            &plan.mode_changes,
+            &plan.file_changes,
         );
         self.plan_store.save(&saved_plan)?;
 
@@ -404,10 +392,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         if let Err(err) = executor.execute(
             &plan.hunks,
             &plan.planned_commits,
-            &plan.new_files_to_commits,
-            &plan.binary_files,
-            &plan.mode_changes,
-            &file_modes,
+            &plan.file_changes,
             opts.no_verify,
             opts.no_editor,
             &mut saved_plan,
