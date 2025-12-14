@@ -66,7 +66,7 @@ pub struct LlmArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Generate a plan for the selected range (applies by default)
+    /// Generate a plan and save it (use 'apply' to execute)
     Plan(PlanArgs),
     /// Apply a previously saved plan
     Apply(ApplyArgs),
@@ -100,8 +100,8 @@ pub struct PlanArgs {
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
-    /// Save plan to disk without applying it
-    #[arg(long = "save-plan", alias = "plan-only")]
+    /// Save plan to disk for later execution with 'apply'
+    #[arg(long = "save-plan")]
     pub save_plan: bool,
 
     /// Skip pre-commit and commit-msg hooks
