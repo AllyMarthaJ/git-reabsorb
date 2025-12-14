@@ -1123,7 +1123,9 @@ fn helper_two() {
 
     // Parse hunks from working tree
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // Should have multiple hunks (depending on git's diff algorithm)
     // The key is that they all apply cleanly when grouped
@@ -1187,7 +1189,9 @@ fn test_hunks_sorted_by_line_number_before_apply() {
 
     // Parse hunks
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // Even if hunks come in any order, they should apply correctly
     // because apply_hunks_to_index sorts them
@@ -1393,7 +1397,9 @@ fn test_apply_single_hunk_to_index() {
 
     // Parse the hunk
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
     assert!(!hunks.is_empty());
 
     // Apply single hunk
@@ -1426,7 +1432,9 @@ fn test_apply_hunks_from_multiple_files() {
 
     // Parse hunks
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
     assert_eq!(hunks.len(), 2);
 
     // Apply all hunks together
@@ -1478,7 +1486,6 @@ fn test_saved_plan_creation_and_roundtrip() {
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
     )];
 
-    // Create SavedPlan
     let saved_plan = SavedPlan::new(
         "preserve".to_string(),
         base.clone(),
@@ -1486,8 +1493,6 @@ fn test_saved_plan_creation_and_roundtrip() {
         &planned,
         &hunks,
         &HashMap::new(),
-        &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1538,8 +1543,6 @@ fn test_save_and_load_plan() {
         &planned,
         &hunks,
         &HashMap::new(),
-        &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1600,8 +1603,6 @@ fn test_plan_progress_tracking() {
         &planned,
         &hunks,
         &HashMap::new(),
-        &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1664,8 +1665,6 @@ fn test_plan_with_new_hunks() {
         &planned,
         &hunks,
         &HashMap::new(),
-        &HashMap::new(),
-        &[],
         &[],
     );
 
@@ -1711,9 +1710,6 @@ fn test_plan_stores_file_mappings() {
     let mut file_to_commits = HashMap::new();
     file_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
 
-    let mut new_files_to_commits = HashMap::new();
-    new_files_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
-
     let planned = vec![PlannedCommit::new(
         CommitDescription::new("Test", "Test"),
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
@@ -1726,8 +1722,6 @@ fn test_plan_stores_file_mappings() {
         &planned,
         &hunks,
         &file_to_commits,
-        &new_files_to_commits,
-        &[],
         &[],
     );
 
@@ -1737,16 +1731,12 @@ fn test_plan_stores_file_mappings() {
 
     // Verify mappings are restored
     let restored_file_to_commits = loaded.get_file_to_commits();
-    let restored_new_files = loaded.get_new_files_to_commits();
 
     assert_eq!(restored_file_to_commits.len(), 1);
     assert_eq!(
         restored_file_to_commits.get("src/main.rs"),
         Some(&vec![head.clone()])
     );
-
-    assert_eq!(restored_new_files.len(), 1);
-    assert_eq!(restored_new_files.get("src/main.rs"), Some(&vec![head]));
 
     // Clean up
     delete_plan(&namespace).unwrap();
@@ -1834,7 +1824,9 @@ fn helper_two() {
 
     // Parse hunks from working tree diff
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // We need at least 2 hunks to test splitting
     assert!(
@@ -1942,7 +1934,9 @@ fn function_b() {
 
     // Parse the diff
     let diff = repo.git.get_working_tree_diff().unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // With enough spacing, we should get 2 separate hunks
     assert!(
@@ -2035,8 +2029,9 @@ impl Calculator {
     // Get hunks from working tree
     let diff = repo.git.get_working_tree_diff().unwrap();
     let hunks =
-        git_reabsorb::diff_parser::parse_diff(&diff, std::slice::from_ref(&original_head), 0)
-            .unwrap();
+        git_reabsorb::patch::parse(&diff, std::slice::from_ref(&original_head), 0)
+            .unwrap()
+            .hunks;
 
     // The hunks should reference the original commit
     for hunk in &hunks {
@@ -2141,7 +2136,7 @@ fn test_diff_trees_captures_new_files_that_working_tree_diff_misses() {
 /// Verifies that hunks can be parsed from diff_trees output for new files
 #[test]
 fn test_diff_trees_produces_parseable_hunks_for_new_files() {
-    use git_reabsorb::diff_parser::parse_diff;
+    use git_reabsorb::patch::parse;
 
     let repo = TestRepo::new();
 
@@ -2166,7 +2161,9 @@ fn test_diff_trees_produces_parseable_hunks_for_new_files() {
     let diff_output = repo.git.diff_trees(&base, &head).unwrap();
 
     // Parse hunks from the diff
-    let hunks = parse_diff(&diff_output, std::slice::from_ref(&head), 0).unwrap();
+    let hunks = parse(&diff_output, std::slice::from_ref(&head), 0)
+        .unwrap()
+        .hunks;
 
     // Should have hunks for both new files
     let github_hunks: Vec<_> = hunks
@@ -2453,7 +2450,9 @@ fn test_reorder_commits_creating_new_file_from_modifications() {
 
     // Get hunks using diff_trees (base to HEAD)
     let diff = repo.git.diff_trees(&base, "HEAD").unwrap();
-    let hunks = git_reabsorb::diff_parser::parse_diff(&diff, &[], 0).unwrap();
+    let hunks = git_reabsorb::patch::parse(&diff, &[], 0)
+        .unwrap()
+        .hunks;
 
     // The diff should show file.txt as a new file with final content
     let file_hunks: Vec<_> = hunks
