@@ -334,13 +334,12 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         info!("Strategy: {}", plan.strategy_name);
         print_planned_commits(&plan.planned_commits, 0);
 
-        // Dry run: just show the plan, no changes
+        // Dry run: just show the plan, no disk writes
         if opts.dry_run {
-            info!("--dry-run: no changes made.");
             return Ok(());
         }
 
-        // Save plan: save to disk without applying, no reset
+        // Save plan to disk
         if opts.save_plan {
             let saved_plan = SavedPlan::new(
                 plan.strategy_name.clone(),
@@ -357,66 +356,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 crate::plan_store::plan_file_path(&self.namespace).display()
             );
             info!("To apply: git reabsorb apply");
-            return Ok(());
         }
-
-        // Full execution: save pre-reabsorb state, reset, and apply
-        if self.git.has_pre_reabsorb_head(&self.pre_reabsorb_ref) {
-            warn!(
-                "Pre-reabsorb state exists ({}). Use 'git reabsorb reset' or it will be overwritten.",
-                short_sha(&self.git.get_pre_reabsorb_head(&self.pre_reabsorb_ref)?)
-            );
-        }
-
-        self.git.save_pre_reabsorb_head(&self.pre_reabsorb_ref)?;
-        info!("Saved pre-reabsorb state to {}", self.pre_reabsorb_ref);
-
-        info!("Resetting to {}...", short_sha(&range.base));
-        self.git.reset_to(&range.base)?;
-
-        let mut saved_plan = SavedPlan::new(
-            plan.strategy_name.clone(),
-            range.base.clone(),
-            range.head.clone(),
-            &plan.planned_commits,
-            &plan.hunks,
-            &plan.file_to_commits,
-            &plan.file_changes,
-        );
-        self.plan_store.save(&saved_plan)?;
-
-        // Register cancellation handler for graceful Ctrl+C cleanup
-        cancel::register_handler();
-
-        let executor = PlanExecutor::new(&self.git, &self.editor, &self.plan_store);
-        if let Err(err) = executor.execute(
-            &plan.hunks,
-            &plan.planned_commits,
-            &plan.file_changes,
-            opts.no_verify,
-            opts.no_editor,
-            &mut saved_plan,
-        ) {
-            // Handle cancellation by resetting to pre-reabsorb state
-            if matches!(err, ExecutionError::Cancelled) {
-                warn!("Cancelled. Resetting to pre-reabsorb state...");
-                if let Err(reset_err) = self.reset_to_pre_reabsorb() {
-                    error!("Failed to reset: {}", reset_err);
-                }
-                return Err(AppError::User("Cancelled by user".to_string()));
-            }
-
-            error!("{}", err);
-            info!(
-                "Progress saved. Use 'git reabsorb apply --resume' to continue, or 'git reabsorb reset' to undo."
-            );
-            return Err(AppError::Execution(err));
-        }
-
-        self.verify_final_state(&saved_plan.original_head)?;
-        self.plan_store.delete()?;
-        info!("Done! Created {} commits.", plan.planned_commits.len());
-        info!("To undo: git reabsorb reset");
 
         Ok(())
     }

@@ -58,13 +58,39 @@ fn main() {
         llm_config,
         namespace.clone(),
     );
-    let command = cli
-        .command
-        .unwrap_or(Command::Plan(cli.default_plan.clone()));
+    match cli.command {
+        Some(cmd) => {
+            if let Err(err) = app.run(cmd) {
+                log::error!("{}", err);
+                std::process::exit(1);
+            }
+        }
+        None => {
+            // No subcommand: plan (with save) then apply
+            let mut plan_args = cli.default_plan.clone();
+            plan_args.save_plan = true;
 
-    if let Err(err) = app.run(command) {
-        log::error!("{}", err);
-        std::process::exit(1);
+            if let Err(err) = app.run(Command::Plan(plan_args.clone())) {
+                log::error!("{}", err);
+                std::process::exit(1);
+            }
+
+            // If dry-run was specified, don't apply
+            if cli.default_plan.dry_run {
+                return;
+            }
+
+            let apply_args = git_reabsorb::cli::ApplyArgs {
+                resume: false,
+                no_verify: plan_args.no_verify,
+                no_editor: plan_args.no_editor,
+            };
+
+            if let Err(err) = app.run(Command::Apply(apply_args)) {
+                log::error!("{}", err);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
