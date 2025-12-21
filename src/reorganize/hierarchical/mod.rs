@@ -37,12 +37,13 @@ pub use clusterer::{ClusterConfig, Clusterer};
 pub use orderer::GlobalOrderer;
 pub use planner::CommitPlanner;
 pub use types::*;
-pub use validator::{assign_orphans, to_planned_commits, Validator};
+pub use validator::{assign_orphans, deduplicate_across_commits, to_planned_commits, Validator};
 
 use std::sync::Arc;
 
 use log::{debug, info};
 
+use crate::features::Feature;
 use crate::llm::LlmClient;
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
@@ -150,8 +151,15 @@ impl HierarchicalReorganizer {
             .repair(ordered, &validations, hunks, &analysis)
             .map_err(|e| ReorganizeError::InvalidPlan(e.to_string()))?;
 
-        // Assign any orphaned hunks
-        let final_commits = assign_orphans(repaired, hunks, &analysis);
+        // Apply cross-commit fixes under feature flag
+        let final_commits = if Feature::AttemptValidationFix.is_enabled() {
+            // Deduplicate hunks assigned to multiple commits
+            let deduped = deduplicate_across_commits(repaired);
+            // Assign any orphaned hunks
+            assign_orphans(deduped, hunks, &analysis)
+        } else {
+            repaired
+        };
 
         // Final validation
         validator

@@ -350,6 +350,20 @@ pub fn to_planned_commits(commits: Vec<ClusterCommit>) -> Vec<PlannedCommit> {
         .collect()
 }
 
+/// Remove duplicate hunk assignments across commits (keeps first occurrence)
+pub fn deduplicate_across_commits(mut commits: Vec<ClusterCommit>) -> Vec<ClusterCommit> {
+    let mut seen: HashSet<HunkId> = HashSet::new();
+
+    for commit in &mut commits {
+        commit.hunk_ids.retain(|&id| seen.insert(id));
+    }
+
+    // Remove any commits that ended up with no hunks
+    commits.retain(|c| !c.hunk_ids.is_empty());
+
+    commits
+}
+
 /// Assign orphaned hunks to existing commits or create new ones
 pub fn assign_orphans(
     mut commits: Vec<ClusterCommit>,
@@ -551,5 +565,55 @@ mod tests {
         assert_eq!(planned[0].description.short, "First commit");
         assert_eq!(planned[0].changes.len(), 2);
         assert_eq!(planned[1].changes.len(), 1);
+    }
+
+    #[test]
+    fn test_deduplicate_across_commits_no_duplicates() {
+        let commits = vec![
+            make_commit(0, "First", vec![0, 1]),
+            make_commit(1, "Second", vec![2, 3]),
+        ];
+
+        let result = super::deduplicate_across_commits(commits);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].hunk_ids.len(), 2);
+        assert_eq!(result[1].hunk_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_deduplicate_across_commits_with_duplicates() {
+        let commits = vec![
+            make_commit(0, "First", vec![0, 1]),
+            make_commit(1, "Second", vec![1, 2]), // Hunk 1 is duplicate
+            make_commit(2, "Third", vec![2, 3]),  // Hunk 2 is duplicate
+        ];
+
+        let result = super::deduplicate_across_commits(commits);
+
+        assert_eq!(result.len(), 3);
+        // First commit keeps hunks 0 and 1
+        assert!(result[0].hunk_ids.contains(&HunkId(0)));
+        assert!(result[0].hunk_ids.contains(&HunkId(1)));
+        // Second commit only keeps hunk 2 (1 was already seen)
+        assert_eq!(result[1].hunk_ids, vec![HunkId(2)]);
+        // Third commit only keeps hunk 3 (2 was already seen)
+        assert_eq!(result[2].hunk_ids, vec![HunkId(3)]);
+    }
+
+    #[test]
+    fn test_deduplicate_removes_empty_commits() {
+        let commits = vec![
+            make_commit(0, "First", vec![0, 1]),
+            make_commit(1, "Second", vec![0, 1]), // All duplicates
+            make_commit(2, "Third", vec![2]),
+        ];
+
+        let result = super::deduplicate_across_commits(commits);
+
+        // Second commit should be removed (became empty)
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].short_message, "First");
+        assert_eq!(result[1].short_message, "Third");
     }
 }
