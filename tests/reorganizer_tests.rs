@@ -2515,3 +2515,118 @@ fn test_reorder_commits_creating_new_file_from_modifications() {
         status
     );
 }
+
+// ============================================================================
+// Range Parsing Tests
+// ============================================================================
+
+/// Test that resolve_ref works correctly for branch names
+#[test]
+fn test_resolve_ref_for_branch_name() {
+    let repo = TestRepo::new();
+
+    // Create initial commit on main
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let initial_sha = repo.commit("Initial commit");
+
+    // resolve_ref("main") should return the SHA of main's tip
+    let resolved = repo.git.resolve_ref("main").unwrap();
+    assert_eq!(resolved, initial_sha);
+}
+
+/// Test that resolve_ref works correctly for HEAD
+#[test]
+fn test_resolve_ref_for_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let initial_sha = repo.commit("Initial commit");
+
+    // resolve_ref("HEAD") should return the current HEAD SHA
+    let resolved = repo.git.resolve_ref("HEAD").unwrap();
+    assert_eq!(resolved, initial_sha);
+
+    // Add another commit
+    repo.write_file("src/main.rs", "fn main() {}\n");
+    repo.stage_all();
+    let second_sha = repo.commit("Add main.rs");
+
+    // HEAD should now point to second commit
+    let resolved_after = repo.git.resolve_ref("HEAD").unwrap();
+    assert_eq!(resolved_after, second_sha);
+}
+
+/// Test that single-ref range syntax (e.g., "main") correctly implies "main..HEAD"
+/// by verifying that read_commits returns the expected commits.
+#[test]
+fn test_single_ref_range_implies_head() {
+    let repo = TestRepo::new();
+
+    // Create initial commit on main
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    let base = repo.commit("Initial commit");
+
+    // Create two more commits
+    repo.write_file("src/a.rs", "// a\n");
+    repo.stage_all();
+    repo.commit("Add a.rs");
+
+    repo.write_file("src/b.rs", "// b\n");
+    repo.stage_all();
+    repo.commit("Add b.rs");
+
+    // Using base..HEAD should give us 2 commits
+    let commits_explicit = repo.git.read_commits(&base, "HEAD").unwrap();
+    assert_eq!(commits_explicit.len(), 2);
+
+    // Using just the base SHA (single ref) should give the same result
+    // when combined with get_head() - this is what resolve_range does
+    let head = repo.git.get_head().unwrap();
+    let commits_single_ref = repo.git.read_commits(&base, &head).unwrap();
+    assert_eq!(commits_single_ref.len(), 2);
+
+    // Both should return the same commits
+    assert_eq!(commits_explicit[0].sha, commits_single_ref[0].sha);
+    assert_eq!(commits_explicit[1].sha, commits_single_ref[1].sha);
+}
+
+/// Test that using a branch name as the base in a single-ref range works
+#[test]
+fn test_single_ref_range_with_branch_name() {
+    let repo = TestRepo::new();
+
+    // Create initial commit on main
+    repo.write_file("README.md", "# Test\n");
+    repo.stage_all();
+    repo.commit("Initial commit on main");
+
+    // Create a feature branch
+    run_git(&repo.path, &["checkout", "-b", "feature"]);
+
+    // Add commits on feature branch
+    repo.write_file("src/feature.rs", "// feature\n");
+    repo.stage_all();
+    repo.commit("Add feature.rs");
+
+    repo.write_file("src/more.rs", "// more\n");
+    repo.stage_all();
+    repo.commit("Add more.rs");
+
+    // Resolve "main" to get the base SHA
+    let main_sha = repo.git.resolve_ref("main").unwrap();
+    let head_sha = repo.git.get_head().unwrap();
+
+    // Reading commits from main..HEAD should give us 2 commits
+    let commits = repo.git.read_commits(&main_sha, &head_sha).unwrap();
+    assert_eq!(
+        commits.len(),
+        2,
+        "Should have 2 commits on feature branch since main"
+    );
+    assert_eq!(commits[0].message.short, "Add feature.rs");
+    assert_eq!(commits[1].message.short, "Add more.rs");
+}
