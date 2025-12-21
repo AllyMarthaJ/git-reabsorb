@@ -166,7 +166,7 @@ impl HierarchicalReorganizer {
 }
 
 impl Reorganizer for HierarchicalReorganizer {
-    fn reorganize(
+    fn plan(
         &self,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_empty_hunks() {
         let reorganizer = HierarchicalReorganizer::new(None);
-        let result = reorganizer.reorganize(&[], &[]);
+        let result = reorganizer.plan(&[], &[]);
 
         assert!(matches!(result, Err(ReorganizeError::NoHunks)));
     }
@@ -209,7 +209,7 @@ mod tests {
         let source_commits = vec![make_source_commit("abc123", "Add main")];
 
         let reorganizer = HierarchicalReorganizer::new(None);
-        let result = reorganizer.reorganize(&source_commits, &hunks);
+        let result = reorganizer.plan(&source_commits, &hunks);
 
         // Should error without an LLM client
         assert!(matches!(result, Err(ReorganizeError::InvalidPlan(_))));

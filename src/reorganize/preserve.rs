@@ -8,7 +8,7 @@ use crate::reorganize::{ReorganizeError, Reorganizer};
 pub struct PreserveOriginal;
 
 impl Reorganizer for PreserveOriginal {
-    fn reorganize(
+    fn plan(
         &self,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
@@ -71,7 +71,7 @@ mod tests {
         ];
 
         let reorganizer = PreserveOriginal;
-        let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+        let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
         assert_eq!(planned.len(), 2);
         assert_eq!(planned[0].description.short, "First commit");

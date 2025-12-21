@@ -9,7 +9,7 @@ use crate::reorganize::{ReorganizeError, Reorganizer};
 pub struct GroupByFile;
 
 impl Reorganizer for GroupByFile {
-    fn reorganize(
+    fn plan(
         &self,
         _source_commits: &[SourceCommit],
         hunks: &[Hunk],
@@ -67,7 +67,7 @@ mod tests {
         ];
 
         let reorganizer = GroupByFile;
-        let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+        let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
         assert_eq!(planned.len(), 3);
 
