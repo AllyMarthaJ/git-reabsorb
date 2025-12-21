@@ -3,7 +3,27 @@ use std::{
     path::PathBuf,
 };
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+
+/// Reorganization strategy
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum Strategy {
+    /// Preserve original commit structure
+    Preserve,
+    /// Group changes by file (one commit per file)
+    #[value(name = "by-file")]
+    ByFile,
+    /// Squash all changes into a single commit
+    Squash,
+    /// Use LLM to intelligently reorganize commits (single-shot)
+    Llm,
+    /// Multi-phase hierarchical reorganization (scales to large changes)
+    Hierarchical,
+    /// Use git-absorb to fixup commits
+    Absorb,
+}
 
 /// Unique identifier for a hunk within a reabsorb operation
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

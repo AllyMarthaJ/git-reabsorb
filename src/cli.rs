@@ -109,7 +109,7 @@ pub struct PlanArgs {
 
     /// Reorganization strategy
     #[arg(short = 's', long, value_enum, default_value = "preserve")]
-    pub strategy: StrategyArg,
+    pub strategy: crate::models::Strategy,
 
     /// Show plan without executing
     #[arg(short = 'n', long)]
@@ -193,18 +193,4 @@ pub enum OutputFormat {
     Markdown,
     /// Compact single-line per commit
     Compact,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum StrategyArg {
-    /// Preserve original commit structure
-    Preserve,
-    /// Group changes by file (one commit per file)
-    ByFile,
-    /// Squash all changes into a single commit
-    Squash,
-    /// Use LLM to intelligently reorganize commits (single-shot)
-    Llm,
-    /// Multi-phase hierarchical reorganization (scales to large changes)
-    Hierarchical,
 }

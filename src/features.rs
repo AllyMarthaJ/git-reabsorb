@@ -6,67 +6,27 @@
 
 use std::collections::HashSet;
 use std::env;
-use std::str::FromStr;
 use std::sync::OnceLock;
 
+use clap::ValueEnum;
 use log::warn;
+use serde::{Deserialize, Serialize};
 
 /// Available feature flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum Feature {
     /// Attempt to fix validation errors (unassigned/duplicate hunks) with targeted prompts
     /// instead of retrying from scratch.
     AttemptValidationFix,
+    /// Use gitabsorb to absorb existing commits.
+    Absorb,
 }
 
 impl Feature {
-    /// All available features.
-    pub const ALL: &'static [Feature] = &[Feature::AttemptValidationFix];
-
-    /// Get the CLI/env name for this feature.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Feature::AttemptValidationFix => "attempt-validation-fix",
-        }
-    }
-
-    /// Get a description of what this feature does.
-    pub fn description(&self) -> &'static str {
-        match self {
-            Feature::AttemptValidationFix => {
-                "Fix validation errors with targeted prompts instead of full retry"
-            }
-        }
-    }
-
     /// Check if this feature is enabled in the global config.
     pub fn is_enabled(&self) -> bool {
         Features::global().is_enabled(*self)
-    }
-}
-
-impl std::fmt::Display for Feature {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name())
-    }
-}
-
-impl FromStr for Feature {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().replace('_', "-").as_str() {
-            "attempt-validation-fix" => Ok(Feature::AttemptValidationFix),
-            _ => Err(format!(
-                "Unknown feature: '{}'. Available features: {}",
-                s,
-                Feature::ALL
-                    .iter()
-                    .map(|f| f.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-        }
     }
 }
 
@@ -89,7 +49,7 @@ impl Features {
         let mut features = Self::new();
         if let Ok(value) = env::var("GIT_REABSORB_FEATURES") {
             for name in value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                if let Ok(feature) = name.parse() {
+                if let Ok(feature) = Feature::from_str(name, true) {
                     features.enable(feature);
                 } else {
                     warn!("Unknown feature '{}' in GIT_REABSORB_FEATURES", name);
@@ -118,7 +78,7 @@ impl Features {
     pub fn with_overrides(mut self, cli_features: Option<&[String]>) -> Self {
         if let Some(features) = cli_features {
             for name in features {
-                if let Ok(feature) = name.parse() {
+                if let Ok(feature) = Feature::from_str(name, true) {
                     self.enable(feature);
                 } else {
                     warn!("Unknown feature '{}' in --features", name);
@@ -152,14 +112,10 @@ mod tests {
     #[test]
     fn test_feature_parse() {
         assert_eq!(
-            "attempt-validation-fix".parse::<Feature>().unwrap(),
+            Feature::from_str("attempt-validation-fix", true).unwrap(),
             Feature::AttemptValidationFix
         );
-        assert_eq!(
-            "attempt_validation_fix".parse::<Feature>().unwrap(),
-            Feature::AttemptValidationFix
-        );
-        assert!("unknown".parse::<Feature>().is_err());
+        assert!(Feature::from_str("unknown", true).is_err());
     }
 
     #[test]

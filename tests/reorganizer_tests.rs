@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use git_reabsorb::git::{Git, GitOps};
-use git_reabsorb::models::Hunk;
+use git_reabsorb::models::{Hunk, Strategy};
 use git_reabsorb::patch::PatchContext;
 use git_reabsorb::reorganize::{GroupByFile, PreserveOriginal, Reorganizer, Squash};
 
@@ -1487,7 +1487,7 @@ fn test_saved_plan_creation_and_roundtrip() {
     )];
 
     let saved_plan = SavedPlan::new(
-        "preserve".to_string(),
+        Strategy::Preserve,
         base.clone(),
         head.clone(),
         &planned,
@@ -1497,7 +1497,7 @@ fn test_saved_plan_creation_and_roundtrip() {
     );
 
     assert_eq!(saved_plan.version, 1);
-    assert_eq!(saved_plan.strategy, "preserve");
+    assert_eq!(saved_plan.strategy, Strategy::Preserve);
     assert_eq!(saved_plan.base_sha, base);
     assert_eq!(saved_plan.original_head, head);
     assert_eq!(saved_plan.commits.len(), 1);
@@ -1537,7 +1537,7 @@ fn test_save_and_load_plan() {
     )];
 
     let plan = SavedPlan::new(
-        "by-file".to_string(),
+        Strategy::ByFile,
         base.clone(),
         head.clone(),
         &planned,
@@ -1553,7 +1553,7 @@ fn test_save_and_load_plan() {
 
     // Load plan
     let loaded = load_plan(&namespace).unwrap();
-    assert_eq!(loaded.strategy, "by-file");
+    assert_eq!(loaded.strategy, Strategy::ByFile);
     assert_eq!(loaded.base_sha, base);
     assert_eq!(loaded.commits.len(), 1);
 
@@ -1597,7 +1597,7 @@ fn test_plan_progress_tracking() {
     ];
 
     let mut plan = SavedPlan::new(
-        "preserve".to_string(),
+        Strategy::Preserve,
         base,
         head,
         &planned,
@@ -1659,7 +1659,7 @@ fn test_plan_with_new_hunks() {
     )];
 
     let plan = SavedPlan::new(
-        "llm".to_string(),
+        Strategy::Llm,
         base.clone(),
         head.clone(),
         &planned,
@@ -1716,7 +1716,7 @@ fn test_plan_stores_file_mappings() {
     )];
 
     let plan = SavedPlan::new(
-        "preserve".to_string(),
+        Strategy::Preserve,
         base,
         head.clone(),
         &planned,
