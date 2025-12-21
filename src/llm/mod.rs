@@ -13,7 +13,8 @@
 //! CLI arguments take precedence over environment variables.
 
 use std::env;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use log::debug;
@@ -186,7 +187,8 @@ impl Default for ClaudeCliClient {
 
 impl LlmClient for ClaudeCliClient {
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        let mut args = vec!["--print", "-p", prompt];
+        // Use stdin for prompt to avoid command line length limits
+        let mut args = vec!["--print"];
 
         let model_str;
         if let Some(ref model) = self.model {
@@ -195,16 +197,31 @@ impl LlmClient for ClaudeCliClient {
             args.push(&model_str);
         }
 
-        let output = Command::new("claude")
+        let mut child = Command::new("claude")
             .args(&args)
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| LlmError::ClientError(format!("Failed to run claude CLI: {}", e)))?;
+
+        // Write prompt to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .map_err(|e| LlmError::ClientError(format!("Failed to write to stdin: {}", e)))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| LlmError::ClientError(format!("Failed to wait for claude CLI: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(LlmError::ClientError(format!(
-                "claude CLI failed: {}",
-                stderr
+                "claude CLI failed: \n\nstderr: {}\n\n stdout: {}",
+                stderr, stdout
             )));
         }
 
