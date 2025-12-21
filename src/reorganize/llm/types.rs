@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 /// Context about a source commit sent to the LLM
 #[derive(Debug, Clone, Serialize)]
 pub struct CommitContext {
-    pub sha: String,
-    pub message: String,
+    pub source_commit: crate::models::SourceCommit,
+    // Any more metadata that we need goes here.
 }
 
 /// Context about a hunk sent to the LLM
@@ -18,8 +18,8 @@ pub struct HunkContext {
     pub new_start: u32,
     /// The actual diff content (+/- lines)
     pub diff_content: String,
-    /// Which source commit this hunk came from
-    pub source_commit_sha: Option<String>,
+    /// Which source commits this hunk likely came from
+    pub source_commit_shas: Vec<String>,
 }
 
 /// Full context sent to the LLM
