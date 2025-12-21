@@ -256,8 +256,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &hunks,
             &planned_commits,
             &file_changes,
-            opts.no_verify,
-            opts.no_editor,
+            opts.execution.no_verify,
+            opts.execution.no_editor,
             &mut plan,
         ) {
             // Handle cancellation by resetting to pre-reabsorb state

@@ -12,7 +12,10 @@ pub struct Cli {
     pub llm: LlmArgs,
 
     #[command(flatten)]
-    pub default_plan: PlanArgs,
+    pub plan: PlanArgs,
+
+    #[command(flatten)]
+    pub execution: ExecutionArgs,
 
     /// Enable experimental features (comma-separated)
     /// Available: attempt-validation-fix
@@ -80,6 +83,18 @@ pub enum Command {
     Compare(CompareArgs),
 }
 
+/// Shared args for commit execution (used by both plan+apply and apply)
+#[derive(Args, Debug, Clone, Default)]
+pub struct ExecutionArgs {
+    /// Skip pre-commit and commit-msg hooks
+    #[arg(long)]
+    pub no_verify: bool,
+
+    /// Use planned messages without opening an editor
+    #[arg(long = "no-editor")]
+    pub no_editor: bool,
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct PlanArgs {
     /// Commit range to reabsorb (default: auto-detect branch base..HEAD)
@@ -103,14 +118,6 @@ pub struct PlanArgs {
     /// Save plan to disk for later execution with 'apply'
     #[arg(long = "save-plan")]
     pub save_plan: bool,
-
-    /// Skip pre-commit and commit-msg hooks
-    #[arg(long)]
-    pub no_verify: bool,
-
-    /// Use planned messages without opening an editor
-    #[arg(long = "no-editor")]
-    pub no_editor: bool,
 }
 
 #[derive(Args, Debug)]
@@ -119,13 +126,8 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub resume: bool,
 
-    /// Skip pre-commit and commit-msg hooks
-    #[arg(long)]
-    pub no_verify: bool,
-
-    /// Use the planned commit messages without opening an editor
-    #[arg(long = "no-editor")]
-    pub no_editor: bool,
+    #[command(flatten)]
+    pub execution: ExecutionArgs,
 }
 
 #[derive(Args, Debug, Clone)]
