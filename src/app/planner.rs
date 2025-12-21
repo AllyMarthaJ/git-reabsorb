@@ -162,8 +162,16 @@ mod tests {
     #[test]
     fn drops_empty_commits() {
         let mut planned = vec![
-            PlannedCommit::from_hunk_ids(PlannedCommitId(0), CommitDescription::short_only("keep"), vec![HunkId(1)]),
-            PlannedCommit::new(PlannedCommitId(1), CommitDescription::short_only("drop"), vec![]),
+            PlannedCommit::from_hunk_ids(
+                PlannedCommitId(0),
+                CommitDescription::short_only("keep"),
+                vec![HunkId(1)],
+            ),
+            PlannedCommit::new(
+                PlannedCommitId(1),
+                CommitDescription::short_only("drop"),
+                vec![],
+            ),
         ];
 
         let removed = retain_non_empty(&mut planned);
