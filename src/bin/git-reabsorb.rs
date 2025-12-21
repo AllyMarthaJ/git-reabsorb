@@ -67,7 +67,7 @@ fn main() {
         }
         None => {
             // No subcommand: plan (with save) then apply
-            let mut plan_args = cli.default_plan.clone();
+            let mut plan_args = cli.plan.clone();
             plan_args.save_plan = true;
 
             if let Err(err) = app.run(Command::Plan(plan_args.clone())) {
@@ -76,14 +76,13 @@ fn main() {
             }
 
             // If dry-run was specified, don't apply
-            if cli.default_plan.dry_run {
+            if cli.plan.dry_run {
                 return;
             }
 
             let apply_args = git_reabsorb::cli::ApplyArgs {
                 resume: false,
-                no_verify: plan_args.no_verify,
-                no_editor: plan_args.no_editor,
+                execution: cli.execution.clone(),
             };
 
             if let Err(err) = app.run(Command::Apply(apply_args)) {
