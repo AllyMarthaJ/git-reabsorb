@@ -5,7 +5,7 @@ use crate::reorganize::{ReorganizeError, Reorganizer};
 pub struct Squash;
 
 impl Reorganizer for Squash {
-    fn reorganize(
+    fn plan(
         &self,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
@@ -56,7 +56,7 @@ mod tests {
         let hunks = vec![make_hunk(0), make_hunk(1), make_hunk(2)];
 
         let reorganizer = Squash;
-        let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+        let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].changes.len(), 3);

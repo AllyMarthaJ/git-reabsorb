@@ -136,7 +136,7 @@ fn test_preserve_original_single_commit() {
     let hunks = repo.read_hunks(&commits);
 
     let reorganizer = PreserveOriginal;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have exactly 1 planned commit
     assert_eq!(planned.len(), 1);
@@ -178,7 +178,7 @@ fn test_preserve_original_multiple_commits() {
     assert_eq!(commits.len(), 3);
 
     let reorganizer = PreserveOriginal;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should preserve all 3 commits in order
     assert_eq!(planned.len(), 3);
@@ -210,7 +210,7 @@ fn test_preserve_original_commit_with_multiple_files() {
     assert_eq!(hunks.len(), 3); // 3 files = 3 hunks
 
     let reorganizer = PreserveOriginal;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have 1 commit with all 3 hunks
     assert_eq!(planned.len(), 1);
@@ -240,7 +240,7 @@ fn test_group_by_file_single_file() {
     let hunks = repo.read_hunks(&commits);
 
     let reorganizer = GroupByFile;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have 1 commit for 1 file
     assert_eq!(planned.len(), 1);
@@ -268,7 +268,7 @@ fn test_group_by_file_multiple_files_single_commit() {
     let hunks = repo.read_hunks(&commits);
 
     let reorganizer = GroupByFile;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have 3 commits, one per file
     assert_eq!(planned.len(), 3);
@@ -314,7 +314,7 @@ fn test_group_by_file_same_file_multiple_commits() {
     assert_eq!(hunks.len(), 3); // Each commit has 1 hunk
 
     let reorganizer = GroupByFile;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have 1 commit with all hunks for main.rs
     assert_eq!(planned.len(), 1);
@@ -358,7 +358,7 @@ fn test_group_by_file_interleaved_changes() {
     assert_eq!(commits.len(), 4);
 
     let reorganizer = GroupByFile;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have 2 commits: one for main.rs, one for lib.rs
     assert_eq!(planned.len(), 2);
@@ -401,7 +401,7 @@ fn test_squash_single_commit() {
     let hunks = repo.read_hunks(&commits);
 
     let reorganizer = Squash;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have 1 commit
     assert_eq!(planned.len(), 1);
@@ -439,7 +439,7 @@ fn test_squash_multiple_commits() {
     assert_eq!(hunks.len(), 3);
 
     let reorganizer = Squash;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should have exactly 1 commit with all hunks
     assert_eq!(planned.len(), 1);
@@ -481,7 +481,7 @@ fn test_squash_many_hunks() {
     assert_eq!(hunks.len(), 6); // 3 files * 2 commits
 
     let reorganizer = Squash;
-    let planned = reorganizer.reorganize(&commits, &hunks).unwrap();
+    let planned = reorganizer.plan(&commits, &hunks).unwrap();
 
     // Should squash everything into 1 commit
     assert_eq!(planned.len(), 1);
@@ -524,9 +524,9 @@ fn test_file_with_multiple_hunks_in_single_commit() {
     let by_file = GroupByFile;
     let squash = Squash;
 
-    let preserve_planned = preserve.reorganize(&commits, &hunks).unwrap();
-    let by_file_planned = by_file.reorganize(&commits, &hunks).unwrap();
-    let squash_planned = squash.reorganize(&commits, &hunks).unwrap();
+    let preserve_planned = preserve.plan(&commits, &hunks).unwrap();
+    let by_file_planned = by_file.plan(&commits, &hunks).unwrap();
+    let squash_planned = squash.plan(&commits, &hunks).unwrap();
 
     assert_eq!(preserve_planned.len(), 1);
     assert_eq!(by_file_planned.len(), 1); // All hunks in same file
@@ -557,7 +557,7 @@ fn test_deleted_file() {
 
     // All reorganizers should handle deletions
     let preserve = PreserveOriginal;
-    let planned = preserve.reorganize(&commits, &hunks).unwrap();
+    let planned = preserve.plan(&commits, &hunks).unwrap();
 
     assert_eq!(planned.len(), 1);
     assert_eq!(planned[0].changes.len(), 1);
@@ -585,7 +585,7 @@ fn test_renamed_file() {
     let preserve = PreserveOriginal;
 
     if !hunks.is_empty() {
-        let planned = preserve.reorganize(&commits, &hunks).unwrap();
+        let planned = preserve.plan(&commits, &hunks).unwrap();
         assert!(!planned.is_empty());
     }
     // If no hunks (pure rename), that's also valid behavior
@@ -612,7 +612,7 @@ fn test_empty_file_creation() {
     // This is valid regardless of whether hunks were created
     if !hunks.is_empty() {
         let preserve = PreserveOriginal;
-        let planned = preserve.reorganize(&commits, &hunks).unwrap();
+        let planned = preserve.plan(&commits, &hunks).unwrap();
         assert!(!planned.is_empty());
     }
 }

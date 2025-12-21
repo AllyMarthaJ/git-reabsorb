@@ -135,7 +135,7 @@ fn test_llm_reorganizer_simple_commits() {
     let reorganizer = LlmReorganizer::new(client);
 
     // Run reorganization
-    let result = reorganizer.reorganize(&commits, &parsed.hunks);
+    let result = reorganizer.plan(&commits, &parsed.hunks);
     assert!(
         result.is_ok(),
         "LLM reorganization failed: {:?}",
@@ -220,7 +220,7 @@ fn test_llm_reorganizer_multiple_commits() {
     let client = Box::new(ClaudeCliClient::new());
     let reorganizer = LlmReorganizer::new(client);
 
-    let result = reorganizer.reorganize(&commits, &parsed.hunks);
+    let result = reorganizer.plan(&commits, &parsed.hunks);
     assert!(
         result.is_ok(),
         "LLM reorganization failed: {:?}",

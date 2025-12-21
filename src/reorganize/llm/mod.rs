@@ -270,7 +270,7 @@ impl LlmReorganizer {
 }
 
 impl Reorganizer for LlmReorganizer {
-    fn reorganize(
+    fn plan(
         &self,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
