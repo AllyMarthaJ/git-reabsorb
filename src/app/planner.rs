@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use log::debug;
+use log::{debug, warn};
 
 use crate::git::{GitError, GitOps};
-use crate::patch::{parse, ParseError, Patch};
 use crate::models::{FileChange, Hunk, PlannedCommit, SourceCommit, Strategy};
+use crate::patch::{parse, ParseError, Patch};
 use crate::reorganize::ReorganizeError;
+use crate::validation::validate_plan;
 
 use super::StrategyFactory;
 
@@ -13,11 +14,21 @@ use super::StrategyFactory;
 pub struct Planner<'a, G: GitOps> {
     git: &'a G,
     strategies: StrategyFactory,
+    max_fix_attempts: usize,
 }
 
 impl<'a, G: GitOps> Planner<'a, G> {
     pub fn new(git: &'a G, strategies: StrategyFactory) -> Self {
-        Self { git, strategies }
+        Self {
+            git,
+            strategies,
+            max_fix_attempts: 3,
+        }
+    }
+
+    pub fn with_max_fix_attempts(mut self, max_fix_attempts: usize) -> Self {
+        self.max_fix_attempts = max_fix_attempts;
+        self
     }
 
     pub fn read_source_commits(
@@ -88,6 +99,35 @@ impl<'a, G: GitOps> Planner<'a, G> {
         let removed_empty = retain_non_empty(&mut planned_commits);
         if removed_empty > 0 {
             debug!("Dropped {} empty commits from plan", removed_empty);
+        }
+
+        // Validate and fix loop with max retries
+        for attempt in 0..self.max_fix_attempts {
+            let validation = validate_plan(&planned_commits, hunks);
+            if validation.is_valid() {
+                break;
+            }
+
+            if attempt == self.max_fix_attempts - 1 {
+                warn!(
+                    "Plan still invalid after {} fix attempts: {:?}",
+                    self.max_fix_attempts, validation.issues
+                );
+                break;
+            }
+
+            debug!(
+                "Plan validation failed (attempt {}), attempting fix: {:?}",
+                attempt + 1,
+                validation.issues
+            );
+
+            planned_commits =
+                reorganizer.fix_plan(planned_commits, &validation, source_commits, hunks)?;
+            let removed = retain_non_empty(&mut planned_commits);
+            if removed > 0 {
+                debug!("Dropped {} empty commits after fix", removed);
+            }
         }
 
         Ok(PlanDraft {
