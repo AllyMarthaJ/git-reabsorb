@@ -98,7 +98,7 @@ pub struct ExecutionArgs {
 #[derive(Args, Debug, Clone)]
 pub struct PlanArgs {
     /// Commit range to reabsorb (default: auto-detect branch base..HEAD)
-    /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456
+    /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456, or just 'main' (implies main..HEAD)
     #[arg(value_name = "RANGE")]
     pub range: Option<String>,
 
@@ -133,7 +133,7 @@ pub struct ApplyArgs {
 #[derive(Args, Debug, Clone)]
 pub struct AssessArgs {
     /// Commit range to assess (default: auto-detect branch base..HEAD)
-    /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456
+    /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456, or just 'main' (implies main..HEAD)
     #[arg(value_name = "RANGE")]
     pub range: Option<String>,
 

@@ -70,17 +70,19 @@ fn resolve_range<G: GitOps>(
 ) -> Result<CommitRange, GitError> {
     match (range, base_branch) {
         (Some(r), None) => {
-            let parts: Vec<&str> = r.split("..").collect();
-            if parts.len() != 2 {
-                return Err(GitError::CommandFailed(format!(
-                    "Invalid range: {}. Expected 'base..head'",
-                    r
-                )));
+            if let Some((base, head)) = r.split_once("..") {
+                // Explicit range: base..head
+                Ok(CommitRange {
+                    base: git.resolve_ref(base)?,
+                    head: git.resolve_ref(head)?,
+                })
+            } else {
+                // Single ref: treat as base..HEAD
+                Ok(CommitRange {
+                    base: git.resolve_ref(r)?,
+                    head: git.get_head()?,
+                })
             }
-            Ok(CommitRange {
-                base: git.resolve_ref(parts[0])?,
-                head: git.resolve_ref(parts[1])?,
-            })
         }
         (None, Some(branch)) => Ok(CommitRange {
             base: git.resolve_ref(branch)?,
