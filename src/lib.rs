@@ -11,6 +11,7 @@ pub mod patch;
 pub mod plan_store;
 pub mod reorganize;
 pub mod utils;
+pub mod validation;
 
 #[cfg(test)]
 pub mod test_utils;

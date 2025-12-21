@@ -1,4 +1,4 @@
-use crate::models::{CommitDescription, Hunk, PlannedCommit, SourceCommit};
+use crate::models::{CommitDescription, Hunk, PlannedCommit, PlannedCommitId, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
 /// Squashes all hunks into a single commit.
@@ -31,6 +31,7 @@ impl Reorganizer for Squash {
         }
 
         Ok(vec![PlannedCommit::from_hunk_ids(
+            PlannedCommitId(0),
             CommitDescription::new(short, long),
             hunk_ids,
         )])

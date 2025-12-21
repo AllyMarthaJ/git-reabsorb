@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::models::{CommitDescription, Hunk, HunkId, PlannedCommit, SourceCommit};
+use crate::models::{CommitDescription, Hunk, HunkId, PlannedCommit, PlannedCommitId, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
 /// Groups hunks by file path.
@@ -27,7 +27,7 @@ impl Reorganizer for GroupByFile {
         }
 
         let mut planned = Vec::new();
-        for (file_path, hunk_ids) in hunks_by_file {
+        for (idx, (file_path, hunk_ids)) in hunks_by_file.into_iter().enumerate() {
             let file_name = file_path
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
@@ -37,6 +37,7 @@ impl Reorganizer for GroupByFile {
             let long = format!("Update {}\n\nChanges to {}", file_name, file_path.display());
 
             planned.push(PlannedCommit::from_hunk_ids(
+                PlannedCommitId(idx),
                 CommitDescription::new(short, long),
                 hunk_ids,
             ));

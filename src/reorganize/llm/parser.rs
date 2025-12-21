@@ -1,26 +1,20 @@
-//! JSON parsing and validation for LLM responses
+//! JSON parsing for LLM responses
 
-use std::collections::HashSet;
+use std::path::PathBuf;
 
-use crate::models::Hunk;
+use crate::models::{DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
 use crate::utils::extract_json_str;
 
-use super::types::{ChangeSpec, LlmPlan};
+use super::types::{ChangeSpec, LlmCommit};
 use crate::llm::LlmError;
 
-/// Specific validation issues that can be fixed with targeted prompts
-#[derive(Debug, Clone)]
-pub enum ValidationIssue {
-    /// Hunks that weren't assigned to any commit
-    UnassignedHunks(Vec<usize>),
-    /// A hunk assigned to multiple commits (hunk_id, commit indices)
-    DuplicateHunk {
-        hunk_id: usize,
-        commit_indices: Vec<usize>,
-    },
+/// Wrapper for deserializing the LLM's JSON response
+#[derive(serde::Deserialize)]
+struct LlmResponse {
+    commits: Vec<LlmCommit>,
 }
 
-pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
+pub fn extract_json(response: &str) -> Result<Vec<LlmCommit>, LlmError> {
     let json_str = match extract_json_str(response) {
         Some(json) => json.trim(),
         None => {
@@ -31,193 +25,147 @@ pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
         }
     };
 
-    serde_json::from_str(json_str).map_err(|e| LlmError::ParseError(format!("{}: {}", e, json_str)))
+    let parsed: LlmResponse = serde_json::from_str(json_str)
+        .map_err(|e| LlmError::ParseError(format!("{}: {}", e, json_str)))?;
+    Ok(parsed.commits)
 }
 
-pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {
-    let valid_hunk_ids: HashSet<usize> = hunks.iter().map(|h| h.id.0).collect();
-    let mut assigned_hunks: HashSet<usize> = HashSet::new();
-
-    for commit in &plan.commits {
-        if commit.description.short.is_empty() {
-            return Err(LlmError::ValidationError(
-                "Commit has empty short description".to_string(),
-            ));
-        }
-
-        for change in &commit.changes {
-            match change {
-                ChangeSpec::Hunk { id } => {
-                    if !valid_hunk_ids.contains(id) {
-                        return Err(LlmError::InvalidId(*id));
-                    }
-                    if !assigned_hunks.insert(*id) {
-                        return Err(LlmError::ValidationError(format!(
-                            "Hunk {} assigned to multiple commits",
-                            id
-                        )));
-                    }
-                }
-                ChangeSpec::Partial { hunk_id, lines } => {
-                    if !valid_hunk_ids.contains(hunk_id) {
-                        return Err(LlmError::InvalidId(*hunk_id));
-                    }
-                    if lines.is_empty() {
-                        return Err(LlmError::ValidationError(format!(
-                            "Partial hunk {} has no lines",
-                            hunk_id
-                        )));
-                    }
-                    let hunk = hunks.iter().find(|h| h.id.0 == *hunk_id).unwrap();
-                    let max_line = hunk.lines.len();
-                    for &line in lines {
-                        if line == 0 || line > max_line {
-                            return Err(LlmError::InvalidIndex {
-                                item_id: *hunk_id,
-                                index: line,
-                            });
-                        }
-                    }
-                }
-                ChangeSpec::Raw { file_path, diff } => {
-                    if file_path.is_empty() {
-                        return Err(LlmError::ValidationError(
-                            "Raw change has empty file_path".to_string(),
-                        ));
-                    }
-                    if diff.is_empty() {
-                        return Err(LlmError::ValidationError(
-                            "Raw change has empty diff".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    let unassigned: Vec<_> = valid_hunk_ids
-        .difference(&assigned_hunks)
-        .copied()
-        .collect();
-    if !unassigned.is_empty() {
-        return Err(LlmError::ValidationError(format!(
-            "{} hunks were not assigned to any commit: {:?}",
-            unassigned.len(),
-            unassigned
-        )));
-    }
-
-    Ok(())
-}
-
-/// Validate and return specific fixable issues if any
-pub fn validate_plan_with_issues(
-    plan: &LlmPlan,
+/// Convert LlmCommits to PlannedCommits, processing Partial and Raw specs
+pub fn to_planned_commits(
+    llm_commits: Vec<LlmCommit>,
     hunks: &[Hunk],
-) -> Result<(), (LlmError, Option<ValidationIssue>)> {
-    let valid_hunk_ids: HashSet<usize> = hunks.iter().map(|h| h.id.0).collect();
-    let mut hunk_to_commits: std::collections::HashMap<usize, Vec<usize>> =
-        std::collections::HashMap::new();
+) -> Result<Vec<PlannedCommit>, LlmError> {
+    let mut next_hunk_id = hunks.iter().map(|h| h.id.0).max().unwrap_or(0) + 1;
 
-    for (commit_idx, commit) in plan.commits.iter().enumerate() {
-        if commit.description.short.is_empty() {
-            return Err((
-                LlmError::ValidationError("Commit has empty short description".to_string()),
-                None,
-            ));
-        }
-
-        for change in &commit.changes {
-            match change {
-                ChangeSpec::Hunk { id } => {
-                    if !valid_hunk_ids.contains(id) {
-                        return Err((LlmError::InvalidId(*id), None));
-                    }
-                    hunk_to_commits.entry(*id).or_default().push(commit_idx);
-                }
-                ChangeSpec::Partial { hunk_id, lines } => {
-                    if !valid_hunk_ids.contains(hunk_id) {
-                        return Err((LlmError::InvalidId(*hunk_id), None));
-                    }
-                    if lines.is_empty() {
-                        return Err((
-                            LlmError::ValidationError(format!(
-                                "Partial hunk {} has no lines",
-                                hunk_id
-                            )),
-                            None,
-                        ));
-                    }
-                    let hunk = hunks.iter().find(|h| h.id.0 == *hunk_id).unwrap();
-                    let max_line = hunk.lines.len();
-                    for &line in lines {
-                        if line == 0 || line > max_line {
-                            return Err((
-                                LlmError::InvalidIndex {
-                                    item_id: *hunk_id,
-                                    index: line,
-                                },
-                                None,
-                            ));
+    llm_commits
+        .into_iter()
+        .enumerate()
+        .map(|(commit_idx, llm_commit)| {
+            let changes = llm_commit
+                .changes
+                .into_iter()
+                .map(|spec| -> Result<PlannedChange, LlmError> {
+                    match spec {
+                        ChangeSpec::Hunk { id } => Ok(PlannedChange::ExistingHunk(HunkId(id))),
+                        ChangeSpec::Partial { hunk_id, lines } => {
+                            let source = hunks
+                                .iter()
+                                .find(|h| h.id.0 == hunk_id)
+                                .ok_or(LlmError::InvalidId(hunk_id))?;
+                            let new_hunk = extract_partial_hunk(source, &lines, next_hunk_id)?;
+                            next_hunk_id += 1;
+                            Ok(PlannedChange::NewHunk(new_hunk))
+                        }
+                        ChangeSpec::Raw { file_path, diff } => {
+                            let new_hunk = parse_raw_diff(&file_path, &diff, next_hunk_id)?;
+                            next_hunk_id += 1;
+                            Ok(PlannedChange::NewHunk(new_hunk))
                         }
                     }
-                    // Partial hunks don't count as "assigned" for duplicate detection
-                }
-                ChangeSpec::Raw { file_path, diff } => {
-                    if file_path.is_empty() {
-                        return Err((
-                            LlmError::ValidationError("Raw change has empty file_path".to_string()),
-                            None,
-                        ));
-                    }
-                    if diff.is_empty() {
-                        return Err((
-                            LlmError::ValidationError("Raw change has empty diff".to_string()),
-                            None,
-                        ));
-                    }
-                }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlannedCommit::new(
+                PlannedCommitId(commit_idx),
+                llm_commit.description,
+                changes,
+            ))
+        })
+        .collect()
+}
+
+fn extract_partial_hunk(
+    source: &Hunk,
+    line_indices: &[usize],
+    new_id: usize,
+) -> Result<Hunk, LlmError> {
+    let mut new_lines = Vec::new();
+    let (mut old_count, mut new_count) = (0u32, 0u32);
+
+    for &idx in line_indices {
+        if idx == 0 || idx > source.lines.len() {
+            return Err(LlmError::InvalidIndex {
+                item_id: source.id.0,
+                index: idx,
+            });
+        }
+        let line = &source.lines[idx - 1];
+        match line {
+            DiffLine::Context(_) => {
+                old_count += 1;
+                new_count += 1;
+            }
+            DiffLine::Added(_) => {
+                new_count += 1;
+            }
+            DiffLine::Removed(_) => {
+                old_count += 1;
             }
         }
+        new_lines.push(line.clone());
     }
 
-    // Check for duplicates
-    for (hunk_id, commits) in &hunk_to_commits {
-        if commits.len() > 1 {
-            return Err((
-                LlmError::ValidationError(format!("Hunk {} assigned to multiple commits", hunk_id)),
-                Some(ValidationIssue::DuplicateHunk {
-                    hunk_id: *hunk_id,
-                    commit_indices: commits.clone(),
-                }),
-            ));
-        }
-    }
+    Ok(Hunk {
+        id: HunkId(new_id),
+        file_path: source.file_path.clone(),
+        old_start: source.old_start,
+        old_count,
+        new_start: source.new_start,
+        new_count,
+        lines: new_lines,
+        likely_source_commits: source.likely_source_commits.clone(),
+        old_missing_newline_at_eof: source.old_missing_newline_at_eof,
+        new_missing_newline_at_eof: source.new_missing_newline_at_eof,
+    })
+}
 
-    // Check for unassigned
-    let assigned_hunks: HashSet<usize> = hunk_to_commits.keys().copied().collect();
-    let unassigned: Vec<_> = valid_hunk_ids
-        .difference(&assigned_hunks)
-        .copied()
+fn parse_raw_diff(file_path: &str, diff: &str, new_id: usize) -> Result<Hunk, LlmError> {
+    let (mut old_count, mut new_count) = (0u32, 0u32);
+    let lines: Vec<_> = diff
+        .lines()
+        .filter_map(|line| {
+            if let Some(content) = line.strip_prefix('+') {
+                new_count += 1;
+                Some(DiffLine::Added(content.to_string()))
+            } else if let Some(content) = line.strip_prefix('-') {
+                old_count += 1;
+                Some(DiffLine::Removed(content.to_string()))
+            } else if let Some(content) = line.strip_prefix(' ') {
+                old_count += 1;
+                new_count += 1;
+                Some(DiffLine::Context(content.to_string()))
+            } else if !line.is_empty() {
+                old_count += 1;
+                new_count += 1;
+                Some(DiffLine::Context(line.to_string()))
+            } else {
+                None
+            }
+        })
         .collect();
-    if !unassigned.is_empty() {
-        return Err((
-            LlmError::ValidationError(format!(
-                "{} hunks were not assigned to any commit: {:?}",
-                unassigned.len(),
-                unassigned
-            )),
-            Some(ValidationIssue::UnassignedHunks(unassigned)),
+
+    if lines.is_empty() {
+        return Err(LlmError::ValidationError(
+            "Raw diff produced no lines".into(),
         ));
     }
 
-    Ok(())
+    Ok(Hunk {
+        id: HunkId(new_id),
+        file_path: PathBuf::from(file_path),
+        old_start: 1,
+        old_count,
+        new_start: 1,
+        new_count,
+        lines,
+        likely_source_commits: Vec::new(),
+        old_missing_newline_at_eof: false,
+        new_missing_newline_at_eof: false,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::make_hunk;
 
     #[test]
     fn test_extract_json_with_code_fence() {
@@ -237,95 +185,17 @@ mod tests {
 
 That's it!"#;
 
-        let plan = extract_json(response).unwrap();
-        assert_eq!(plan.commits.len(), 1);
-        assert_eq!(plan.commits[0].description.short, "Test commit");
+        let commits = extract_json(response).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].description.short, "Test commit");
     }
 
     #[test]
     fn test_extract_json_raw() {
         let response = r#"{"commits": [{"short_description": "Test", "long_description": "Test", "changes": []}]}"#;
 
-        let plan = extract_json(response).unwrap();
-        assert_eq!(plan.commits.len(), 1);
-    }
-
-    fn make_llm_commit(
-        short: &str,
-        long: &str,
-        changes: Vec<ChangeSpec>,
-    ) -> super::super::types::LlmCommit {
-        super::super::types::LlmCommit {
-            description: crate::models::CommitDescription::new(short, long),
-            changes,
-        }
-    }
-
-    #[test]
-    fn test_validate_plan_valid() {
-        let hunks = vec![make_hunk(0), make_hunk(1)];
-        let plan = LlmPlan {
-            commits: vec![make_llm_commit(
-                "Test",
-                "Test commit",
-                vec![ChangeSpec::Hunk { id: 0 }, ChangeSpec::Hunk { id: 1 }],
-            )],
-        };
-
-        assert!(validate_plan(&plan, &hunks).is_ok());
-    }
-
-    #[test]
-    fn test_validate_plan_invalid_hunk_id() {
-        let hunks = vec![make_hunk(0)];
-        let plan = LlmPlan {
-            commits: vec![make_llm_commit(
-                "Test",
-                "Test",
-                vec![ChangeSpec::Hunk { id: 999 }],
-            )],
-        };
-
-        let result = validate_plan(&plan, &hunks);
-        assert!(matches!(result, Err(LlmError::InvalidId(999))));
-    }
-
-    #[test]
-    fn test_validate_plan_duplicate_hunk() {
-        let hunks = vec![make_hunk(0)];
-        let plan = LlmPlan {
-            commits: vec![make_llm_commit(
-                "Test",
-                "Test",
-                vec![ChangeSpec::Hunk { id: 0 }, ChangeSpec::Hunk { id: 0 }],
-            )],
-        };
-
-        let result = validate_plan(&plan, &hunks);
-        assert!(matches!(result, Err(LlmError::ValidationError(_))));
-    }
-
-    #[test]
-    fn test_validate_plan_unassigned_hunks() {
-        // Two hunks exist but only one is assigned - should error so we can retry
-        let hunks = vec![make_hunk(0), make_hunk(1)];
-        let plan = LlmPlan {
-            commits: vec![make_llm_commit(
-                "Test",
-                "Test",
-                vec![ChangeSpec::Hunk { id: 0 }], // Missing hunk 1
-            )],
-        };
-
-        let result = validate_plan(&plan, &hunks);
-        assert!(matches!(result, Err(LlmError::ValidationError(_))));
-        if let Err(LlmError::ValidationError(msg)) = result {
-            assert!(
-                msg.contains("not assigned"),
-                "Error should mention unassigned hunks: {}",
-                msg
-            );
-        }
+        let commits = extract_json(response).unwrap();
+        assert_eq!(commits.len(), 1);
     }
 
     #[test]

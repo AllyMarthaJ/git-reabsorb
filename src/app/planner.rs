@@ -117,13 +117,13 @@ fn retain_non_empty(planned_commits: &mut Vec<PlannedCommit>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{CommitDescription, HunkId, PlannedCommit};
+    use crate::models::{CommitDescription, HunkId, PlannedCommit, PlannedCommitId};
 
     #[test]
     fn drops_empty_commits() {
         let mut planned = vec![
-            PlannedCommit::from_hunk_ids(CommitDescription::short_only("keep"), vec![HunkId(1)]),
-            PlannedCommit::new(CommitDescription::short_only("drop"), vec![]),
+            PlannedCommit::from_hunk_ids(PlannedCommitId(0), CommitDescription::short_only("keep"), vec![HunkId(1)]),
+            PlannedCommit::new(PlannedCommitId(1), CommitDescription::short_only("drop"), vec![]),
         ];
 
         let removed = retain_non_empty(&mut planned);

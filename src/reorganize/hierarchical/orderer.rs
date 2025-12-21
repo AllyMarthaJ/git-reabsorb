@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use log::debug;
 
-use super::types::{AnalysisResults, ChangeCategory, ClusterCommit, ClusterId, HierarchicalError};
+use crate::models::{HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
+
+use super::types::{AnalysisResults, ChangeCategory, HierarchicalError};
 
 /// Orders commits based on dependencies and logical ordering rules
 pub struct GlobalOrderer;
@@ -12,9 +14,9 @@ pub struct GlobalOrderer;
 impl GlobalOrderer {
     /// Order commits based on dependencies and heuristics
     pub fn order(
-        commits: Vec<ClusterCommit>,
+        commits: Vec<PlannedCommit>,
         analysis: &AnalysisResults,
-    ) -> Result<Vec<ClusterCommit>, HierarchicalError> {
+    ) -> Result<Vec<PlannedCommit>, HierarchicalError> {
         if commits.is_empty() {
             return Ok(commits);
         }
@@ -25,7 +27,7 @@ impl GlobalOrderer {
         // Add explicit dependencies from commits
         for commit in &commits {
             for dep in &commit.depends_on {
-                graph.add_edge(*dep, commit.cluster_id);
+                graph.add_edge(*dep, commit.id);
             }
         }
 
@@ -64,10 +66,10 @@ impl GlobalOrderer {
         let ordered_ids = ordered_ids.ok_or(HierarchicalError::CyclicDependency)?;
 
         // Build ordered result
-        let commit_map: HashMap<ClusterId, ClusterCommit> =
-            commits.into_iter().map(|c| (c.cluster_id, c)).collect();
+        let commit_map: HashMap<PlannedCommitId, PlannedCommit> =
+            commits.into_iter().map(|c| (c.id, c)).collect();
 
-        let ordered: Vec<ClusterCommit> = ordered_ids
+        let ordered: Vec<PlannedCommit> = ordered_ids
             .into_iter()
             .filter_map(|id| commit_map.get(&id).cloned())
             .collect();
@@ -77,23 +79,34 @@ impl GlobalOrderer {
 
     /// Add dependencies based on change categories
     fn add_category_dependencies(
-        commits: &[ClusterCommit],
+        commits: &[PlannedCommit],
         analysis: &AnalysisResults,
         graph: &mut DependencyGraph,
     ) {
         // Collect commits by category
-        let mut by_category: HashMap<ChangeCategory, Vec<ClusterId>> = HashMap::new();
+        let mut by_category: HashMap<ChangeCategory, Vec<PlannedCommitId>> = HashMap::new();
 
         for commit in commits {
-            let categories: HashSet<ChangeCategory> = commit
-                .hunk_ids
+            let hunk_ids: Vec<HunkId> = commit
+                .changes
+                .iter()
+                .filter_map(|c| {
+                    if let PlannedChange::ExistingHunk(id) = c {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let categories: HashSet<ChangeCategory> = hunk_ids
                 .iter()
                 .filter_map(|id| analysis.get(*id))
                 .map(|a| a.category)
                 .collect();
 
             for cat in categories {
-                by_category.entry(cat).or_default().push(commit.cluster_id);
+                by_category.entry(cat).or_default().push(commit.id);
             }
         }
 
@@ -138,20 +151,32 @@ impl GlobalOrderer {
 
     /// Add dependencies based on file changes
     fn add_file_dependencies(
-        commits: &[ClusterCommit],
+        commits: &[PlannedCommit],
         analysis: &AnalysisResults,
         graph: &mut DependencyGraph,
     ) {
         // Group commits by the files they touch
-        let mut commits_by_file: HashMap<String, Vec<(ClusterId, usize)>> = HashMap::new();
+        let mut commits_by_file: HashMap<String, Vec<(PlannedCommitId, usize)>> = HashMap::new();
 
         for commit in commits {
-            for (idx, hunk_id) in commit.hunk_ids.iter().enumerate() {
+            let hunk_ids: Vec<HunkId> = commit
+                .changes
+                .iter()
+                .filter_map(|c| {
+                    if let PlannedChange::ExistingHunk(id) = c {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (idx, hunk_id) in hunk_ids.iter().enumerate() {
                 if let Some(a) = analysis.get(*hunk_id) {
                     commits_by_file
                         .entry(a.file_path.clone())
                         .or_default()
-                        .push((commit.cluster_id, idx));
+                        .push((commit.id, idx));
                 }
             }
         }
@@ -179,17 +204,17 @@ impl GlobalOrderer {
 
 /// Simple dependency graph for topological sorting
 struct DependencyGraph {
-    nodes: HashSet<ClusterId>,
-    edges: HashMap<ClusterId, HashSet<ClusterId>>,
-    reverse_edges: HashMap<ClusterId, HashSet<ClusterId>>,
+    nodes: HashSet<PlannedCommitId>,
+    edges: HashMap<PlannedCommitId, HashSet<PlannedCommitId>>,
+    reverse_edges: HashMap<PlannedCommitId, HashSet<PlannedCommitId>>,
 }
 
 impl DependencyGraph {
-    fn new(commits: &[ClusterCommit]) -> Self {
-        let nodes: HashSet<ClusterId> = commits.iter().map(|c| c.cluster_id).collect();
-        let edges: HashMap<ClusterId, HashSet<ClusterId>> =
+    fn new(commits: &[PlannedCommit]) -> Self {
+        let nodes: HashSet<PlannedCommitId> = commits.iter().map(|c| c.id).collect();
+        let edges: HashMap<PlannedCommitId, HashSet<PlannedCommitId>> =
             nodes.iter().map(|&id| (id, HashSet::new())).collect();
-        let reverse_edges: HashMap<ClusterId, HashSet<ClusterId>> =
+        let reverse_edges: HashMap<PlannedCommitId, HashSet<PlannedCommitId>> =
             nodes.iter().map(|&id| (id, HashSet::new())).collect();
 
         Self {
@@ -199,7 +224,7 @@ impl DependencyGraph {
         }
     }
 
-    fn add_edge(&mut self, from: ClusterId, to: ClusterId) {
+    fn add_edge(&mut self, from: PlannedCommitId, to: PlannedCommitId) {
         if !self.nodes.contains(&from) || !self.nodes.contains(&to) {
             return;
         }
@@ -211,8 +236,8 @@ impl DependencyGraph {
         self.reverse_edges.entry(to).or_default().insert(from);
     }
 
-    fn topological_sort(&self) -> Result<Vec<ClusterId>, HierarchicalError> {
-        let mut in_degree: HashMap<ClusterId, usize> = self
+    fn topological_sort(&self) -> Result<Vec<PlannedCommitId>, HierarchicalError> {
+        let mut in_degree: HashMap<PlannedCommitId, usize> = self
             .nodes
             .iter()
             .map(|&id| {
@@ -222,7 +247,7 @@ impl DependencyGraph {
             .collect();
 
         // Start with nodes that have no incoming edges
-        let mut queue: VecDeque<ClusterId> = in_degree
+        let mut queue: VecDeque<PlannedCommitId> = in_degree
             .iter()
             .filter(|(_, &deg)| deg == 0)
             .map(|(&id, _)| id)
@@ -254,7 +279,7 @@ impl DependencyGraph {
     }
 
     /// Find nodes involved in a cycle
-    fn find_cycle_nodes(&self) -> HashSet<ClusterId> {
+    fn find_cycle_nodes(&self) -> HashSet<PlannedCommitId> {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
         let mut cycle_nodes = HashSet::new();
@@ -270,10 +295,10 @@ impl DependencyGraph {
 
     fn dfs_find_cycle(
         &self,
-        node: ClusterId,
-        visited: &mut HashSet<ClusterId>,
-        rec_stack: &mut HashSet<ClusterId>,
-        cycle_nodes: &mut HashSet<ClusterId>,
+        node: PlannedCommitId,
+        visited: &mut HashSet<PlannedCommitId>,
+        rec_stack: &mut HashSet<PlannedCommitId>,
+        cycle_nodes: &mut HashSet<PlannedCommitId>,
     ) -> bool {
         visited.insert(node);
         rec_stack.insert(node);
@@ -311,7 +336,7 @@ impl DependencyGraph {
         // Remove edges between cycle nodes
         for &from_node in &cycle_nodes {
             if let Some(neighbors) = self.edges.get_mut(&from_node) {
-                let to_remove: Vec<ClusterId> = neighbors
+                let to_remove: Vec<PlannedCommitId> = neighbors
                     .iter()
                     .filter(|&&to| cycle_nodes.contains(&to))
                     .copied()
@@ -334,16 +359,15 @@ impl DependencyGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::HunkId;
+    use crate::models::{CommitDescription, HunkId, PlannedChange};
 
-    fn make_commit(id: usize, hunk_ids: Vec<usize>, depends_on: Vec<usize>) -> ClusterCommit {
-        ClusterCommit {
-            cluster_id: ClusterId(id),
-            short_message: format!("Commit {}", id),
-            long_message: format!("Long message for commit {}", id),
-            hunk_ids: hunk_ids.into_iter().map(HunkId).collect(),
-            depends_on: depends_on.into_iter().map(ClusterId).collect(),
-        }
+    fn make_commit(id: usize, hunk_ids: Vec<usize>, depends_on: Vec<usize>) -> PlannedCommit {
+        PlannedCommit::with_dependencies(
+            PlannedCommitId(id),
+            CommitDescription::new(format!("Commit {}", id), format!("Long message for commit {}", id)),
+            hunk_ids.into_iter().map(|h| PlannedChange::ExistingHunk(HunkId(h))).collect(),
+            depends_on.into_iter().map(PlannedCommitId).collect(),
+        )
     }
 
     #[test]
@@ -359,7 +383,7 @@ mod tests {
         let ordered = GlobalOrderer::order(commits, &analysis).unwrap();
 
         // Should respect explicit dependencies: 0 -> 1 -> 2
-        let ids: Vec<usize> = ordered.iter().map(|c| c.cluster_id.0).collect();
+        let ids: Vec<usize> = ordered.iter().map(|c| c.id.0).collect();
         assert_eq!(ids, vec![0, 1, 2]);
     }
 
@@ -382,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_empty_commits() {
-        let commits: Vec<ClusterCommit> = vec![];
+        let commits: Vec<PlannedCommit> = vec![];
         let analysis = AnalysisResults::new();
 
         let ordered = GlobalOrderer::order(commits, &analysis).unwrap();

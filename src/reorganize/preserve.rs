@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::models::{Hunk, HunkId, PlannedCommit, SourceCommit};
+use crate::models::{Hunk, HunkId, PlannedCommit, PlannedCommitId, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
 /// Preserves the original commit structure.
@@ -35,9 +35,10 @@ impl Reorganizer for PreserveOriginal {
         }
 
         let mut planned = Vec::new();
-        for source in source_commits {
+        for (idx, source) in source_commits.iter().enumerate() {
             if let Some(hunk_ids) = hunks_by_commit.get(source.sha.as_str()) {
                 planned.push(PlannedCommit::from_hunk_ids(
+                    PlannedCommitId(idx),
                     source.message.clone(),
                     hunk_ids.clone(),
                 ));
