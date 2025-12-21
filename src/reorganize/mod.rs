@@ -1,15 +1,18 @@
+mod absorb;
 mod by_file;
 pub mod hierarchical;
 pub mod llm;
 mod preserve;
 mod squash;
 
+pub use absorb::Absorb;
 pub use by_file::GroupByFile;
 pub use hierarchical::{HierarchicalConfig, HierarchicalReorganizer};
 pub use llm::LlmReorganizer;
 pub use preserve::PreserveOriginal;
 pub use squash::Squash;
 
+use crate::git::GitOps;
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
 
 /// Errors from reorganization
@@ -29,14 +32,32 @@ impl From<hierarchical::HierarchicalError> for ReorganizeError {
     }
 }
 
+/// Result of apply indicating whether to continue with default execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyResult {
+    /// Strategy handled everything, skip default execution
+    Handled,
+    /// Continue with default hunk-based execution
+    Continue,
+}
+
 /// Trait for reorganizing hunks into planned commits
 pub trait Reorganizer {
     /// Take source commits and hunks, return a plan for new commits
-    fn reorganize(
+    fn plan(
         &self,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
     ) -> Result<Vec<PlannedCommit>, ReorganizeError>;
+
+    /// Apply the strategy. Returns whether to continue with default execution.
+    fn apply(
+        &self,
+        _git: &dyn GitOps,
+        _extra_args: &[String],
+    ) -> Result<ApplyResult, ReorganizeError> {
+        Ok(ApplyResult::Continue)
+    }
 
     /// Human-readable name for this strategy
     fn name(&self) -> &'static str;
