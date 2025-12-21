@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit};
+use crate::models::{CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit, Strategy};
 
 const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
@@ -30,7 +30,7 @@ pub enum PlanFileError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPlan {
     pub version: u32,
-    pub strategy: String,
+    pub strategy: Strategy,
     pub base_sha: String,
     pub original_head: String,
     pub commits: Vec<SavedCommit>,
@@ -51,7 +51,7 @@ pub struct SavedCommit {
 
 impl SavedPlan {
     pub fn new(
-        strategy: String,
+        strategy: Strategy,
         base_sha: String,
         original_head: String,
         planned_commits: &[PlannedCommit],
@@ -289,7 +289,7 @@ mod tests {
         )];
 
         let saved = SavedPlan::new(
-            "preserve".into(),
+            Strategy::Preserve,
             "base".into(),
             "head".into(),
             &planned,

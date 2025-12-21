@@ -2,10 +2,9 @@ use std::collections::HashMap;
 
 use log::debug;
 
-use crate::cli::StrategyArg;
 use crate::git::{GitError, GitOps};
 use crate::patch::{parse, ParseError, Patch};
-use crate::models::{FileChange, Hunk, PlannedCommit, SourceCommit};
+use crate::models::{FileChange, Hunk, PlannedCommit, SourceCommit, Strategy};
 use crate::reorganize::ReorganizeError;
 
 use super::StrategyFactory;
@@ -78,22 +77,21 @@ impl<'a, G: GitOps> Planner<'a, G> {
 
     pub fn draft_plan(
         &self,
-        strategy: StrategyArg,
+        strategy: Strategy,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
         file_to_commits: &HashMap<String, Vec<String>>,
         file_changes: &[FileChange],
     ) -> Result<PlanDraft, ReorganizeError> {
         let reorganizer = self.strategies.create(strategy);
-        let strategy_name = reorganizer.name().to_string();
-        let mut planned_commits = reorganizer.reorganize(source_commits, hunks)?;
+        let mut planned_commits = reorganizer.plan(source_commits, hunks)?;
         let removed_empty = retain_non_empty(&mut planned_commits);
         if removed_empty > 0 {
             debug!("Dropped {} empty commits from plan", removed_empty);
         }
 
         Ok(PlanDraft {
-            strategy_name,
+            strategy,
             planned_commits,
             hunks: hunks.to_vec(),
             file_to_commits: file_to_commits.clone(),
@@ -103,7 +101,7 @@ impl<'a, G: GitOps> Planner<'a, G> {
 }
 
 pub struct PlanDraft {
-    pub strategy_name: String,
+    pub strategy: Strategy,
     pub planned_commits: Vec<PlannedCommit>,
     pub hunks: Vec<Hunk>,
     pub file_to_commits: HashMap<String, Vec<String>>,

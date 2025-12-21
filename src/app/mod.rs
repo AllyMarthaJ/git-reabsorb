@@ -5,18 +5,16 @@ use log::{error, info, warn};
 
 use crate::assessment::{self, AssessmentEngine, CriterionId};
 use crate::cancel;
-use crate::cli::{
-    ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs, StrategyArg,
-};
+use crate::cli::{ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs};
 use crate::patch::ParseError;
 use crate::editor::{Editor, EditorError};
 use crate::git::{GitError, GitOps};
 use crate::llm::LlmConfig;
-use crate::models::PlannedCommit;
+use crate::models::{PlannedCommit, Strategy};
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 use crate::reorganize::{
-    GroupByFile, HierarchicalReorganizer, LlmReorganizer, PreserveOriginal, ReorganizeError,
-    Reorganizer, Squash,
+    Absorb, ApplyResult, GroupByFile, HierarchicalReorganizer, LlmReorganizer, PreserveOriginal,
+    ReorganizeError, Reorganizer, Squash,
 };
 use crate::utils::short_sha;
 
@@ -41,18 +39,19 @@ impl StrategyFactory {
         self
     }
 
-    pub fn create(&self, strategy: StrategyArg) -> Box<dyn Reorganizer> {
+    pub fn create(&self, strategy: Strategy) -> Box<dyn Reorganizer> {
         match strategy {
-            StrategyArg::Preserve => Box::new(PreserveOriginal),
-            StrategyArg::ByFile => Box::new(GroupByFile),
-            StrategyArg::Squash => Box::new(Squash),
-            StrategyArg::Llm => {
+            Strategy::Preserve => Box::new(PreserveOriginal),
+            Strategy::ByFile => Box::new(GroupByFile),
+            Strategy::Squash => Box::new(Squash),
+            Strategy::Llm => {
                 Box::new(LlmReorganizer::new(self.llm_config.create_boxed_client()))
             }
-            StrategyArg::Hierarchical => {
+            Strategy::Hierarchical => {
                 let client = self.llm_config.create_client();
                 Box::new(HierarchicalReorganizer::new(Some(client)))
             }
+            Strategy::Absorb => Box::new(Absorb),
         }
     }
 }
@@ -352,7 +351,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         // Save plan to disk
         if opts.save_plan {
             let saved_plan = SavedPlan::new(
-                plan.strategy_name.clone(),
+                plan.strategy,
                 range.base.clone(),
                 range.head.clone(),
                 &plan.planned_commits,
