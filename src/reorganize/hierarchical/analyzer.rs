@@ -107,7 +107,7 @@ fn analyze_single_hunk(
     file_path: &str,
     prompt: &str,
 ) -> Result<HunkAnalysis, String> {
-    const MAX_RETRIES: u32 = 3;
+    const MAX_RETRIES: u32 = 5;
     let mut last_error = String::new();
 
     for attempt in 0..MAX_RETRIES {
