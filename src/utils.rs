@@ -5,15 +5,6 @@ pub fn short_sha(sha: &str) -> &str {
     &sha[..8.min(sha.len())]
 }
 
-/// Truncate a string to a maximum length
-pub fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() > max_len {
-        &s[..max_len]
-    } else {
-        s
-    }
-}
-
 /// Format diff lines with standard +/- prefixes for display
 pub fn format_diff_lines(lines: &[DiffLine]) -> String {
     lines
@@ -76,13 +67,6 @@ mod tests {
         assert_eq!(short_sha("abc123def456"), "abc123de");
         assert_eq!(short_sha("short"), "short");
         assert_eq!(short_sha(""), "");
-    }
-
-    #[test]
-    fn test_truncate() {
-        assert_eq!(truncate("hello world", 5), "hello");
-        assert_eq!(truncate("hi", 10), "hi");
-        assert_eq!(truncate("", 5), "");
     }
 
     #[test]

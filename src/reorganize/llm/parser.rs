@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::models::Hunk;
-use crate::utils::{extract_json_str, truncate};
+use crate::utils::extract_json_str;
 
 use super::types::{ChangeSpec, LlmPlan};
 use crate::llm::LlmError;
@@ -26,13 +26,12 @@ pub fn extract_json(response: &str) -> Result<LlmPlan, LlmError> {
         None => {
             return Err(LlmError::ParseError(format!(
                 "No JSON found in response. Response content: {}",
-                truncate(response, 200)
+                response
             )));
         }
     };
 
-    serde_json::from_str(json_str)
-        .map_err(|e| LlmError::ParseError(format!("{}: {}", e, truncate(json_str, 200))))
+    serde_json::from_str(json_str).map_err(|e| LlmError::ParseError(format!("{}: {}", e, json_str)))
 }
 
 pub fn validate_plan(plan: &LlmPlan, hunks: &[Hunk]) -> Result<(), LlmError> {

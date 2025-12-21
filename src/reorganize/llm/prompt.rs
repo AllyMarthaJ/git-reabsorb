@@ -9,8 +9,7 @@ pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmCont
     let commit_contexts: Vec<CommitContext> = source_commits
         .iter()
         .map(|c| CommitContext {
-            sha: c.sha.clone(),
-            message: c.message.long.clone(),
+            source_commit: c.clone(),
         })
         .collect();
 
@@ -22,7 +21,7 @@ pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmCont
             old_start: h.old_start,
             new_start: h.new_start,
             diff_content: format_diff_lines(&h.lines),
-            source_commit_sha: h.likely_source_commits.first().cloned(),
+            source_commit_shas: h.likely_source_commits.clone(),
         })
         .collect();
 
@@ -94,8 +93,8 @@ Each change in a commit can be one of:
     for commit in &context.source_commits {
         prompt.push_str(&format!(
             "### Commit {}\n```\n{}\n```\n\n",
-            &commit.sha[..8.min(commit.sha.len())],
-            commit.message
+            &commit.source_commit.sha[..8.min(commit.source_commit.sha.len())],
+            commit.source_commit.message.long
         ));
     }
 
@@ -103,19 +102,24 @@ Each change in a commit can be one of:
 
     for hunk in &context.hunks {
         prompt.push_str(&format!("### Hunk {} - {}\n", hunk.id, hunk.file_path));
-        if let Some(ref sha) = hunk.source_commit_sha {
-            // Look up the commit message to provide context on WHY this change was made
-            let commit_msg = context
-                .source_commits
-                .iter()
-                .find(|c| c.sha.starts_with(sha) || sha.starts_with(&c.sha))
-                .map(|c| c.message.as_str())
-                .unwrap_or("(unknown)");
-            prompt.push_str(&format!(
-                "Original commit: {} - {}\n",
-                &sha[..8.min(sha.len())],
-                commit_msg.lines().next().unwrap_or("(no message)")
-            ));
+        if !hunk.source_commit_shas.is_empty() {
+            prompt.push_str("Source commits:\n");
+            for sha in &hunk.source_commit_shas {
+                let commit_msg = context
+                    .source_commits
+                    .iter()
+                    .find(|c| {
+                        c.source_commit.sha.starts_with(sha)
+                            || sha.starts_with(&c.source_commit.sha)
+                    })
+                    .map(|c| c.source_commit.message.long.as_str())
+                    .unwrap_or("(unknown)");
+                prompt.push_str(&format!(
+                    "  - {} - {}\n",
+                    &sha[..8.min(sha.len())],
+                    commit_msg.lines().next().unwrap_or("(no message)")
+                ));
+            }
         }
         prompt.push_str(&format!(
             "Lines: old @{}, new @{}\n```diff\n{}\n```\n\n",
@@ -164,18 +168,24 @@ Please assign the missing hunks to existing commits or create new commits for th
     for hunk_id in unassigned_hunk_ids {
         if let Some(hunk) = context.hunks.iter().find(|h| h.id == *hunk_id) {
             prompt.push_str(&format!("### Hunk {} - {}\n", hunk.id, hunk.file_path));
-            if let Some(ref sha) = hunk.source_commit_sha {
-                let commit_msg = context
-                    .source_commits
-                    .iter()
-                    .find(|c| c.sha.starts_with(sha) || sha.starts_with(&c.sha))
-                    .map(|c| c.message.as_str())
-                    .unwrap_or("(unknown)");
-                prompt.push_str(&format!(
-                    "Original commit: {} - {}\n",
-                    &sha[..8.min(sha.len())],
-                    commit_msg.lines().next().unwrap_or("(no message)")
-                ));
+            if !hunk.source_commit_shas.is_empty() {
+                prompt.push_str("Source commits:\n");
+                for sha in &hunk.source_commit_shas {
+                    let commit_msg = context
+                        .source_commits
+                        .iter()
+                        .find(|c| {
+                            c.source_commit.sha.starts_with(sha)
+                                || sha.starts_with(&c.source_commit.sha)
+                        })
+                        .map(|c| c.source_commit.message.long.as_str())
+                        .unwrap_or("(unknown)");
+                    prompt.push_str(&format!(
+                        "  - {} - {}\n",
+                        &sha[..8.min(sha.len())],
+                        commit_msg.lines().next().unwrap_or("(no message)")
+                    ));
+                }
             }
             prompt.push_str(&format!(
                 "Lines: old @{}, new @{}\n```diff\n{}\n```\n\n",
