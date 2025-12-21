@@ -3,7 +3,7 @@
 use crate::models::{Hunk, SourceCommit};
 use crate::utils::format_diff_lines;
 
-use super::types::{CommitContext, HunkContext, LlmContext, LlmPlan};
+use super::types::{CommitContext, HunkContext, LlmContext};
 
 pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmContext {
     let commit_contexts: Vec<CommitContext> = source_commits
@@ -142,7 +142,7 @@ Analyze the hunks above and reorganize them into logical commits. Output ONLY va
 /// Build a prompt to fix unassigned hunks by adding them to existing or new commits
 pub fn build_fix_unassigned_prompt(
     context: &LlmContext,
-    current_plan: &LlmPlan,
+    commits: &[crate::models::PlannedCommit],
     unassigned_hunk_ids: &[usize],
 ) -> String {
     let mut prompt = String::new();
@@ -151,18 +151,20 @@ pub fn build_fix_unassigned_prompt(
         r#"You previously created a commit plan, but some hunks were not assigned to any commit.
 Please assign the missing hunks to existing commits or create new commits for them.
 
-## Current Plan
+## Current Commits
 
-```json
 "#,
     );
 
-    // Serialize current plan
-    if let Ok(json) = serde_json::to_string_pretty(current_plan) {
-        prompt.push_str(&json);
+    // Show current commits
+    for (idx, commit) in commits.iter().enumerate() {
+        prompt.push_str(&format!(
+            "### Commit {} - \"{}\"\n{}\n\n",
+            idx, commit.description.short, commit.description.long
+        ));
     }
 
-    prompt.push_str("\n```\n\n## Unassigned Hunks\n\n");
+    prompt.push_str("## Unassigned Hunks\n\n");
 
     // Show details of unassigned hunks
     for hunk_id in unassigned_hunk_ids {
@@ -224,7 +226,7 @@ Output ONLY the JSON.
 /// Build a prompt to resolve a duplicate hunk assignment
 pub fn build_fix_duplicate_prompt(
     context: &LlmContext,
-    current_plan: &LlmPlan,
+    commits: &[crate::models::PlannedCommit],
     hunk_id: usize,
     commit_indices: &[usize],
 ) -> String {
@@ -249,7 +251,7 @@ Please choose which single commit should contain this hunk.
     prompt.push_str("## Commits That Claim This Hunk\n\n");
 
     for &idx in commit_indices {
-        if let Some(commit) = current_plan.commits.get(idx) {
+        if let Some(commit) = commits.get(idx) {
             prompt.push_str(&format!(
                 "### Commit {} - \"{}\"\n{}\n\n",
                 idx, commit.description.short, commit.description.long

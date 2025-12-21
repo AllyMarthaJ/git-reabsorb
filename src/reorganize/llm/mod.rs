@@ -11,22 +11,21 @@ mod parser;
 mod prompt;
 mod types;
 
-pub use types::{ChangeSpec, LlmPlan};
-
-use std::path::PathBuf;
+pub use types::ChangeSpec;
 
 use log::{debug, info};
 
 use crate::features::Feature;
 use crate::llm::{LlmClient, LlmError};
 use crate::models::{
-    CommitDescription, DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, SourceCommit,
+    CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId,
+    SourceCommit,
 };
 use crate::reorganize::{ReorganizeError, Reorganizer};
 use crate::utils::extract_json_str;
+use crate::validation::ValidationResult;
 
-use parser::ValidationIssue;
-use types::{FixDuplicateResponse, FixUnassignedResponse, HunkAssignment, LlmCommit, LlmContext};
+use types::{FixDuplicateResponse, FixUnassignedResponse, HunkAssignment};
 
 pub struct LlmReorganizer {
     client: Box<dyn LlmClient>,
@@ -46,11 +45,12 @@ impl LlmReorganizer {
         self
     }
 
+    /// Invoke LLM with retry for parse errors only
     fn invoke_with_retry(
         &self,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
-    ) -> Result<LlmPlan, LlmError> {
+    ) -> Result<Vec<PlannedCommit>, LlmError> {
         let context = prompt::build_context(source_commits, hunks);
         let prompt_text = prompt::build_prompt(&context);
         let mut last_error = None;
@@ -59,36 +59,13 @@ impl LlmReorganizer {
             info!("LLM attempt {}/{}...", attempt, self.max_retries);
             match self.client.complete(&prompt_text) {
                 Ok(response) => match parser::extract_json(&response) {
-                    Ok(mut plan) => {
-                        match parser::validate_plan_with_issues(&plan, hunks) {
-                            Ok(()) => return Ok(plan),
-                            Err((err, Some(issue))) => {
-                                debug!("Validation error: {}", err);
-                                // Try smart fix if feature is enabled
-                                if Feature::AttemptValidationFix.is_enabled() {
-                                    match self.try_fix_issue(&context, &mut plan, issue, hunks) {
-                                        Ok(()) => {
-                                            // Re-validate after fix
-                                            match parser::validate_plan(&plan, hunks) {
-                                                Ok(()) => return Ok(plan),
-                                                Err(e) => {
-                                                    debug!("Fix didn't resolve all issues: {}", e);
-                                                    last_error = Some(e);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            debug!("Fix attempt failed: {}", e);
-                                            last_error = Some(e);
-                                        }
-                                    }
-                                } else {
-                                    last_error = Some(err);
-                                }
-                            }
-                            Err((err, None)) => {
-                                debug!("Validation error: {}", err);
-                                last_error = Some(err);
+                    Ok(llm_commits) => {
+                        // Convert to PlannedCommits immediately
+                        match parser::to_planned_commits(llm_commits, hunks) {
+                            Ok(commits) => return Ok(commits),
+                            Err(e) => {
+                                debug!("Conversion error: {}", e);
+                                last_error = Some(e);
                             }
                         }
                     }
@@ -106,63 +83,12 @@ impl LlmReorganizer {
         Err(last_error.unwrap_or(LlmError::MaxRetriesExceeded(self.max_retries)))
     }
 
-    /// Try to fix a specific validation issue with a targeted prompt
-    fn try_fix_issue(
+    /// Apply unassigned hunk fixes directly to PlannedCommits
+    fn apply_unassigned_fix_to_commits(
         &self,
-        context: &LlmContext,
-        plan: &mut LlmPlan,
-        issue: ValidationIssue,
-        hunks: &[Hunk],
-    ) -> Result<(), LlmError> {
-        match issue {
-            ValidationIssue::UnassignedHunks(unassigned_ids) => {
-                debug!(
-                    "Attempting to fix {} unassigned hunks...",
-                    unassigned_ids.len()
-                );
-                let fix_prompt =
-                    prompt::build_fix_unassigned_prompt(context, plan, &unassigned_ids);
-                let response = self.client.complete(&fix_prompt)?;
-
-                let json_str = extract_json_str(&response)
-                    .ok_or_else(|| LlmError::ParseError("No JSON in fix response".to_string()))?;
-
-                let fix: FixUnassignedResponse = serde_json::from_str(json_str).map_err(|e| {
-                    LlmError::ParseError(format!("Failed to parse fix response: {}", e))
-                })?;
-
-                self.apply_unassigned_fix(plan, fix, hunks)?;
-                Ok(())
-            }
-            ValidationIssue::DuplicateHunk {
-                hunk_id,
-                commit_indices,
-            } => {
-                debug!("Attempting to fix duplicate hunk {}...", hunk_id);
-                let fix_prompt =
-                    prompt::build_fix_duplicate_prompt(context, plan, hunk_id, &commit_indices);
-                let response = self.client.complete(&fix_prompt)?;
-
-                let json_str = extract_json_str(&response)
-                    .ok_or_else(|| LlmError::ParseError("No JSON in fix response".to_string()))?;
-
-                let fix: FixDuplicateResponse = serde_json::from_str(json_str).map_err(|e| {
-                    LlmError::ParseError(format!("Failed to parse fix response: {}", e))
-                })?;
-
-                self.apply_duplicate_fix(plan, hunk_id, fix.chosen_commit_index)?;
-                Ok(())
-            }
-        }
-    }
-
-    /// Apply a fix for unassigned hunks
-    fn apply_unassigned_fix(
-        &self,
-        plan: &mut LlmPlan,
+        commits: &mut Vec<PlannedCommit>,
         fix: FixUnassignedResponse,
-        _hunks: &[Hunk],
-    ) -> Result<(), LlmError> {
+    ) {
         for assignment in fix.assignments {
             match assignment {
                 HunkAssignment::AddToExisting {
@@ -170,21 +96,16 @@ impl LlmReorganizer {
                     commit_description,
                 } => {
                     // Find the commit by description and add the hunk
-                    let commit = plan
-                        .commits
+                    if let Some(commit) = commits
                         .iter_mut()
                         .find(|c| c.description.short == commit_description)
-                        .ok_or_else(|| {
-                            LlmError::ValidationError(format!(
-                                "Commit '{}' not found in plan",
-                                commit_description
-                            ))
-                        })?;
-                    commit.changes.push(ChangeSpec::Hunk { id: hunk_id });
-                    debug!(
-                        "  Added hunk {} to commit '{}'",
-                        hunk_id, commit_description
-                    );
+                    {
+                        commit.changes.push(PlannedChange::ExistingHunk(HunkId(hunk_id)));
+                        debug!(
+                            "  Added hunk {} to commit '{}'",
+                            hunk_id, commit_description
+                        );
+                    }
                 }
                 HunkAssignment::NewCommit {
                     hunk_id,
@@ -192,10 +113,12 @@ impl LlmReorganizer {
                     long_description,
                 } => {
                     // Create a new commit
-                    plan.commits.push(LlmCommit {
-                        description: CommitDescription::new(&short_description, &long_description),
-                        changes: vec![ChangeSpec::Hunk { id: hunk_id }],
-                    });
+                    let next_id = commits.iter().map(|c| c.id.0).max().unwrap_or(0) + 1;
+                    commits.push(PlannedCommit::new(
+                        PlannedCommitId(next_id),
+                        CommitDescription::new(&short_description, &long_description),
+                        vec![PlannedChange::ExistingHunk(HunkId(hunk_id))],
+                    ));
                     debug!(
                         "  Created new commit '{}' for hunk {}",
                         short_description, hunk_id
@@ -203,69 +126,6 @@ impl LlmReorganizer {
                 }
             }
         }
-        Ok(())
-    }
-
-    /// Apply a fix for duplicate hunk assignment
-    fn apply_duplicate_fix(
-        &self,
-        plan: &mut LlmPlan,
-        hunk_id: usize,
-        chosen_commit_index: usize,
-    ) -> Result<(), LlmError> {
-        // Remove the hunk from all commits except the chosen one
-        for (idx, commit) in plan.commits.iter_mut().enumerate() {
-            if idx != chosen_commit_index {
-                commit
-                    .changes
-                    .retain(|change| !matches!(change, ChangeSpec::Hunk { id } if *id == hunk_id));
-            }
-        }
-        debug!(
-            "  Kept hunk {} only in commit {}",
-            hunk_id, chosen_commit_index
-        );
-        Ok(())
-    }
-
-    fn plan_to_commits(
-        &self,
-        plan: LlmPlan,
-        hunks: &[Hunk],
-        next_hunk_id: &mut usize,
-    ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
-        plan.commits
-            .into_iter()
-            .map(|llm_commit| {
-                let changes = llm_commit
-                    .changes
-                    .into_iter()
-                    .map(|spec| -> Result<PlannedChange, ReorganizeError> {
-                        match spec {
-                            ChangeSpec::Hunk { id } => Ok(PlannedChange::ExistingHunk(HunkId(id))),
-                            ChangeSpec::Partial { hunk_id, lines } => {
-                                let source =
-                                    hunks.iter().find(|h| h.id.0 == hunk_id).ok_or_else(|| {
-                                        ReorganizeError::InvalidPlan(format!(
-                                            "Hunk {} not found",
-                                            hunk_id
-                                        ))
-                                    })?;
-                                let new_hunk = extract_partial_hunk(source, &lines, *next_hunk_id)?;
-                                *next_hunk_id += 1;
-                                Ok(PlannedChange::NewHunk(new_hunk))
-                            }
-                            ChangeSpec::Raw { file_path, diff } => {
-                                let new_hunk = parse_raw_diff(&file_path, &diff, *next_hunk_id)?;
-                                *next_hunk_id += 1;
-                                Ok(PlannedChange::NewHunk(new_hunk))
-                            }
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(PlannedCommit::new(llm_commit.description, changes))
-            })
-            .collect()
     }
 }
 
@@ -278,140 +138,106 @@ impl Reorganizer for LlmReorganizer {
         if hunks.is_empty() {
             return Err(ReorganizeError::NoHunks);
         }
-        let plan = self
-            .invoke_with_retry(source_commits, hunks)
-            .map_err(|e| ReorganizeError::InvalidPlan(e.to_string()))?;
-        let mut next_hunk_id = hunks.iter().map(|h| h.id.0).max().unwrap_or(0) + 1;
-        self.plan_to_commits(plan, hunks, &mut next_hunk_id)
+        self.invoke_with_retry(source_commits, hunks)
+            .map_err(|e| ReorganizeError::InvalidPlan(e.to_string()))
+    }
+
+    fn fix_plan(
+        &self,
+        mut commits: Vec<PlannedCommit>,
+        validation: &ValidationResult,
+        source_commits: &[SourceCommit],
+        hunks: &[Hunk],
+    ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
+        if !Feature::AttemptValidationFix.is_enabled() {
+            // Retry from scratch
+            debug!("Retrying LLM plan from scratch...");
+            return self.plan(source_commits, hunks);
+        }
+
+        debug!("Applying LLM-based fixes to plan...");
+
+        // Build context for prompts
+        let context = prompt::build_context(source_commits, hunks);
+
+        // Fix duplicate hunks using LLM
+        for (hunk_id, commit_ids) in validation.duplicate_hunks() {
+            debug!("Fixing duplicate hunk {} across {:?}", hunk_id.0, commit_ids);
+
+            // Convert commit_ids to indices
+            let commit_indices: Vec<usize> = commit_ids
+                .iter()
+                .filter_map(|id| commits.iter().position(|c| c.id == *id))
+                .collect();
+
+            if commit_indices.len() < 2 {
+                continue; // Not actually a cross-commit duplicate
+            }
+
+            let fix_prompt = prompt::build_fix_duplicate_prompt(
+                &context,
+                &commits,
+                hunk_id.0,
+                &commit_indices,
+            );
+
+            match self.client.complete(&fix_prompt) {
+                Ok(response) => {
+                    if let Some(json_str) = extract_json_str(&response) {
+                        if let Ok(fix) = serde_json::from_str::<FixDuplicateResponse>(json_str) {
+                            // Apply fix: remove hunk from all commits except chosen one
+                            for (idx, commit) in commits.iter_mut().enumerate() {
+                                if idx != fix.chosen_commit_index {
+                                    commit.changes.retain(|c| {
+                                        !matches!(c, PlannedChange::ExistingHunk(id) if *id == hunk_id)
+                                    });
+                                }
+                            }
+                            debug!("  Kept hunk {} in commit index {}", hunk_id.0, fix.chosen_commit_index);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("  LLM fix failed for duplicate hunk {}: {}", hunk_id.0, e);
+                }
+            }
+        }
+
+        // Fix unassigned hunks using LLM
+        if let Some(unassigned) = validation.unassigned_hunks() {
+            if !unassigned.is_empty() {
+                debug!("Fixing {} unassigned hunks", unassigned.len());
+
+                let unassigned_ids: Vec<usize> = unassigned.iter().map(|h| h.0).collect();
+
+                let fix_prompt = prompt::build_fix_unassigned_prompt(
+                    &context,
+                    &commits,
+                    &unassigned_ids,
+                );
+
+                match self.client.complete(&fix_prompt) {
+                    Ok(response) => {
+                        if let Some(json_str) = extract_json_str(&response) {
+                            if let Ok(fix) = serde_json::from_str::<FixUnassignedResponse>(json_str) {
+                                self.apply_unassigned_fix_to_commits(&mut commits, fix);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("  LLM fix failed for unassigned hunks: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Remove any commits that ended up empty
+        commits.retain(|c| !c.changes.is_empty());
+
+        Ok(commits)
     }
 
     fn name(&self) -> &'static str {
         "llm"
-    }
-}
-
-fn extract_partial_hunk(
-    source: &Hunk,
-    line_indices: &[usize],
-    new_id: usize,
-) -> Result<Hunk, ReorganizeError> {
-    let mut new_lines = Vec::new();
-    let (mut old_count, mut new_count) = (0u32, 0u32);
-
-    for &idx in line_indices {
-        if idx == 0 || idx > source.lines.len() {
-            return Err(ReorganizeError::InvalidPlan(format!(
-                "Invalid line index {} for hunk {}",
-                idx, source.id.0
-            )));
-        }
-        let line = &source.lines[idx - 1];
-        match line {
-            DiffLine::Context(_) => {
-                old_count += 1;
-                new_count += 1;
-            }
-            DiffLine::Added(_) => {
-                new_count += 1;
-            }
-            DiffLine::Removed(_) => {
-                old_count += 1;
-            }
-        }
-        new_lines.push(line.clone());
-    }
-
-    Ok(Hunk {
-        id: HunkId(new_id),
-        file_path: source.file_path.clone(),
-        old_start: source.old_start,
-        old_count,
-        new_start: source.new_start,
-        new_count,
-        lines: new_lines,
-        likely_source_commits: source.likely_source_commits.clone(),
-        old_missing_newline_at_eof: source.old_missing_newline_at_eof,
-        new_missing_newline_at_eof: source.new_missing_newline_at_eof,
-    })
-}
-
-fn parse_raw_diff(file_path: &str, diff: &str, new_id: usize) -> Result<Hunk, ReorganizeError> {
-    let (mut old_count, mut new_count) = (0u32, 0u32);
-    let lines: Vec<_> = diff
-        .lines()
-        .filter_map(|line| {
-            if let Some(content) = line.strip_prefix('+') {
-                new_count += 1;
-                Some(DiffLine::Added(content.to_string()))
-            } else if let Some(content) = line.strip_prefix('-') {
-                old_count += 1;
-                Some(DiffLine::Removed(content.to_string()))
-            } else if let Some(content) = line.strip_prefix(' ') {
-                old_count += 1;
-                new_count += 1;
-                Some(DiffLine::Context(content.to_string()))
-            } else if !line.is_empty() {
-                old_count += 1;
-                new_count += 1;
-                Some(DiffLine::Context(line.to_string()))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if lines.is_empty() {
-        return Err(ReorganizeError::InvalidPlan(
-            "Raw diff produced no lines".into(),
-        ));
-    }
-
-    Ok(Hunk {
-        id: HunkId(new_id),
-        file_path: PathBuf::from(file_path),
-        old_start: 1,
-        old_count,
-        new_start: 1,
-        new_count,
-        lines,
-        likely_source_commits: Vec::new(),
-        old_missing_newline_at_eof: false,
-        new_missing_newline_at_eof: false,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::make_hunk_full;
-
-    #[test]
-    fn test_extract_partial_hunk() {
-        let source = make_hunk_full(
-            0,
-            "test.rs",
-            vec![
-                DiffLine::Context("context".to_string()),
-                DiffLine::Added("added".to_string()),
-                DiffLine::Removed("removed".to_string()),
-            ],
-            vec!["abc".to_string()],
-        );
-        let partial = extract_partial_hunk(&source, &[1, 2], 100).unwrap();
-
-        assert_eq!(partial.id.0, 100);
-        assert_eq!(partial.lines.len(), 2);
-        assert_eq!(partial.file_path, source.file_path);
-    }
-
-    #[test]
-    fn test_parse_raw_diff() {
-        let diff = "+added line\n-removed line\n context line";
-        let hunk = parse_raw_diff("test.rs", diff, 50).unwrap();
-
-        assert_eq!(hunk.id.0, 50);
-        assert_eq!(hunk.lines.len(), 3);
-        assert_eq!(hunk.new_count, 2); // added + context
-        assert_eq!(hunk.old_count, 2); // removed + context
     }
 }

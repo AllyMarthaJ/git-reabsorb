@@ -55,12 +55,6 @@ pub enum ChangeSpec {
     Raw { file_path: String, diff: String },
 }
 
-/// The complete plan returned by the LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmPlan {
-    pub commits: Vec<LlmCommit>,
-}
-
 /// Response for fixing unassigned hunks
 #[derive(Debug, Clone, Deserialize)]
 pub struct FixUnassignedResponse {

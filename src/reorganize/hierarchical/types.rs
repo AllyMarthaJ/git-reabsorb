@@ -120,21 +120,6 @@ impl std::fmt::Display for ClusterFormationReason {
     }
 }
 
-/// A planned commit from clustering
-#[derive(Debug, Clone)]
-pub struct ClusterCommit {
-    /// The cluster this commit came from
-    pub cluster_id: ClusterId,
-    /// Short commit message
-    pub short_message: String,
-    /// Long commit message
-    pub long_message: String,
-    /// Hunks in this commit, in order
-    pub hunk_ids: Vec<HunkId>,
-    /// Other clusters this depends on (must be committed first)
-    pub depends_on: Vec<ClusterId>,
-}
-
 /// LLM response for commit planning
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommitPlanResponse {

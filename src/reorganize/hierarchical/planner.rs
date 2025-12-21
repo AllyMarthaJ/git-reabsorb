@@ -6,11 +6,9 @@ use std::thread;
 use log::debug;
 
 use crate::llm::LlmClient;
-use crate::models::{Hunk, HunkId};
+use crate::models::{CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
 
-use super::types::{
-    AnalysisResults, Cluster, ClusterCommit, ClusterId, CommitPlanResponse, HierarchicalError,
-};
+use super::types::{AnalysisResults, Cluster, CommitPlanResponse, HierarchicalError};
 
 /// Plans commits from clusters
 pub struct CommitPlanner {
@@ -37,7 +35,7 @@ impl CommitPlanner {
         clusters: &[Cluster],
         hunks: &[Hunk],
         analysis: &AnalysisResults,
-    ) -> Result<Vec<ClusterCommit>, HierarchicalError> {
+    ) -> Result<Vec<PlannedCommit>, HierarchicalError> {
         if clusters.is_empty() {
             return Ok(Vec::new());
         }
@@ -56,7 +54,7 @@ impl CommitPlanner {
         hunks: &[Hunk],
         analysis: &AnalysisResults,
         client: &Arc<dyn LlmClient + Send + Sync>,
-    ) -> Result<Vec<ClusterCommit>, HierarchicalError> {
+    ) -> Result<Vec<PlannedCommit>, HierarchicalError> {
         let results = Arc::new(Mutex::new(Vec::new()));
         let errors = Arc::new(Mutex::new(Vec::new()));
 
@@ -117,8 +115,8 @@ impl CommitPlanner {
 
         let mut commits = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
 
-        // Sort commits by cluster ID for deterministic ordering
-        commits.sort_by_key(|c| c.cluster_id.0);
+        // Sort commits by ID for deterministic ordering
+        commits.sort_by_key(|c| c.id.0);
 
         Ok(commits)
     }
@@ -129,7 +127,7 @@ fn plan_single_cluster(
     cluster: &Cluster,
     hunks: &[&Hunk],
     analysis: &[super::types::HunkAnalysis],
-) -> Result<Vec<ClusterCommit>, String> {
+) -> Result<Vec<PlannedCommit>, String> {
     let prompt = build_commit_prompt(cluster, hunks, analysis);
 
     const MAX_RETRIES: u32 = 3;
@@ -171,27 +169,36 @@ fn plan_single_cluster(
             return Ok(groups
                 .into_iter()
                 .enumerate()
-                .map(|(i, group)| ClusterCommit {
-                    cluster_id: ClusterId(cluster.id.0 * 1000 + i), // Sub-cluster ID
-                    short_message: group.short_message,
-                    long_message: group.long_message,
-                    hunk_ids: group.hunk_ids.into_iter().map(HunkId).collect(),
-                    depends_on: if i > 0 {
-                        vec![ClusterId(cluster.id.0 * 1000 + i - 1)]
+                .map(|(i, group)| {
+                    let commit_id = PlannedCommitId(cluster.id.0 * 1000 + i);
+                    let depends_on = if i > 0 {
+                        vec![PlannedCommitId(cluster.id.0 * 1000 + i - 1)]
                     } else {
                         Vec::new()
-                    },
+                    };
+                    PlannedCommit::with_dependencies(
+                        commit_id,
+                        CommitDescription::new(group.short_message, group.long_message),
+                        group
+                            .hunk_ids
+                            .into_iter()
+                            .map(|id| PlannedChange::ExistingHunk(HunkId(id)))
+                            .collect(),
+                        depends_on,
+                    )
                 })
                 .collect());
         } else {
             // Single commit for this cluster
-            return Ok(vec![ClusterCommit {
-                cluster_id: cluster.id,
-                short_message: plan.short_message,
-                long_message: plan.long_message,
-                hunk_ids: cluster.hunk_ids.clone(),
-                depends_on: Vec::new(),
-            }]);
+            return Ok(vec![PlannedCommit::new(
+                PlannedCommitId(cluster.id.0),
+                CommitDescription::new(plan.short_message, plan.long_message),
+                cluster
+                    .hunk_ids
+                    .iter()
+                    .map(|id| PlannedChange::ExistingHunk(*id))
+                    .collect(),
+            )]);
         }
     }
 

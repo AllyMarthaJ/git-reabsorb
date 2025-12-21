@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit, Strategy};
+use crate::models::{CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit, PlannedCommitId, Strategy};
 
 const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
@@ -78,7 +78,8 @@ impl SavedPlan {
     pub fn to_planned_commits(&self) -> Vec<PlannedCommit> {
         self.commits
             .iter()
-            .map(|sc| PlannedCommit::new(sc.description.clone(), sc.changes.clone()))
+            .enumerate()
+            .map(|(idx, sc)| PlannedCommit::new(PlannedCommitId(idx), sc.description.clone(), sc.changes.clone()))
             .collect()
     }
 
@@ -281,6 +282,7 @@ mod tests {
     fn roundtrip() {
         let hunk = test_hunk();
         let planned = vec![PlannedCommit::new(
+            PlannedCommitId(0),
             CommitDescription::new("Test", "desc"),
             vec![
                 PlannedChange::ExistingHunk(HunkId(0)),

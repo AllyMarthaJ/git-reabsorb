@@ -35,6 +35,16 @@ impl std::fmt::Display for HunkId {
     }
 }
 
+/// Unique identifier for a planned commit
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PlannedCommitId(pub usize);
+
+impl std::fmt::Display for PlannedCommitId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "commit#{}", self.0)
+    }
+}
+
 /// A commit read from the git history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceCommit {
@@ -248,26 +258,50 @@ impl PlannedChange {
 /// A planned commit - the output of reorganization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedCommit {
+    /// Unique identifier for this planned commit
+    pub id: PlannedCommitId,
     pub description: CommitDescription,
     pub changes: Vec<PlannedChange>,
+    /// Other planned commits this depends on (must be committed first)
+    #[serde(default)]
+    pub depends_on: Vec<PlannedCommitId>,
 }
 
 impl PlannedCommit {
-    pub fn new(description: CommitDescription, changes: Vec<PlannedChange>) -> Self {
+    pub fn new(id: PlannedCommitId, description: CommitDescription, changes: Vec<PlannedChange>) -> Self {
         Self {
+            id,
             description,
             changes,
+            depends_on: Vec::new(),
+        }
+    }
+
+    /// Create with dependencies
+    pub fn with_dependencies(
+        id: PlannedCommitId,
+        description: CommitDescription,
+        changes: Vec<PlannedChange>,
+        depends_on: Vec<PlannedCommitId>,
+    ) -> Self {
+        Self {
+            id,
+            description,
+            changes,
+            depends_on,
         }
     }
 
     /// Create a PlannedCommit from hunk IDs (convenience for existing reorganizers)
-    pub fn from_hunk_ids(description: CommitDescription, hunk_ids: Vec<HunkId>) -> Self {
+    pub fn from_hunk_ids(id: PlannedCommitId, description: CommitDescription, hunk_ids: Vec<HunkId>) -> Self {
         Self {
+            id,
             description,
             changes: hunk_ids
                 .into_iter()
                 .map(PlannedChange::ExistingHunk)
                 .collect(),
+            depends_on: Vec::new(),
         }
     }
 }
@@ -458,10 +492,12 @@ mod tests {
     fn test_planned_commit_from_hunk_ids() {
         let desc = CommitDescription::short_only("Test commit");
         let hunk_ids = vec![HunkId(0), HunkId(1), HunkId(2)];
-        let commit = PlannedCommit::from_hunk_ids(desc, hunk_ids);
+        let commit = PlannedCommit::from_hunk_ids(PlannedCommitId(0), desc, hunk_ids);
 
+        assert_eq!(commit.id.0, 0);
         assert_eq!(commit.description.short, "Test commit");
         assert_eq!(commit.changes.len(), 3);
+        assert!(commit.depends_on.is_empty());
 
         // Verify they're all ExistingHunk variants
         for (i, change) in commit.changes.iter().enumerate() {
@@ -480,11 +516,25 @@ mod tests {
             PlannedChange::ExistingHunk(HunkId(5)),
             PlannedChange::NewHunk(new_hunk),
         ];
-        let commit = PlannedCommit::new(desc, changes);
+        let commit = PlannedCommit::new(PlannedCommitId(1), desc, changes);
 
+        assert_eq!(commit.id.0, 1);
         assert_eq!(commit.changes.len(), 2);
         assert!(matches!(&commit.changes[0], PlannedChange::ExistingHunk(id) if id.0 == 5));
         assert!(matches!(&commit.changes[1], PlannedChange::NewHunk(_)));
+    }
+
+    #[test]
+    fn test_planned_commit_with_dependencies() {
+        let desc = CommitDescription::short_only("Dependent commit");
+        let changes = vec![PlannedChange::ExistingHunk(HunkId(0))];
+        let deps = vec![PlannedCommitId(0), PlannedCommitId(1)];
+        let commit = PlannedCommit::with_dependencies(PlannedCommitId(2), desc, changes, deps);
+
+        assert_eq!(commit.id.0, 2);
+        assert_eq!(commit.depends_on.len(), 2);
+        assert_eq!(commit.depends_on[0].0, 0);
+        assert_eq!(commit.depends_on[1].0, 1);
     }
 
     #[test]

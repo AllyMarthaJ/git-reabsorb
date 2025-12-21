@@ -1452,7 +1452,7 @@ fn test_apply_hunks_from_multiple_files() {
 // Plan File Tests
 // ============================================================================
 
-use git_reabsorb::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit};
+use git_reabsorb::models::{CommitDescription, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
 use git_reabsorb::plan_store::{delete_plan, has_saved_plan, load_plan, save_plan, SavedPlan};
 
 const TEST_REF_NAMESPACE: &str = "test-branch";
@@ -1482,6 +1482,7 @@ fn test_saved_plan_creation_and_roundtrip() {
 
     // Create planned commits
     let planned = vec![PlannedCommit::new(
+        PlannedCommitId(0),
         CommitDescription::new("Test commit", "This is a test commit"),
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
     )];
@@ -1532,6 +1533,7 @@ fn test_save_and_load_plan() {
 
     // Create and save plan
     let planned = vec![PlannedCommit::new(
+        PlannedCommitId(0),
         CommitDescription::new("Commit 1", "First commit"),
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
     )];
@@ -1587,10 +1589,12 @@ fn test_plan_progress_tracking() {
     // Create plan with 2 commits
     let planned = vec![
         PlannedCommit::new(
+            PlannedCommitId(0),
             CommitDescription::new("Commit 1", "First"),
             vec![PlannedChange::ExistingHunk(HunkId(0))],
         ),
         PlannedCommit::new(
+            PlannedCommitId(1),
             CommitDescription::new("Commit 2", "Second"),
             vec![PlannedChange::ExistingHunk(HunkId(1))],
         ),
@@ -1651,6 +1655,7 @@ fn test_plan_with_new_hunks() {
 
     // Create plan with both existing and new hunks
     let planned = vec![PlannedCommit::new(
+        PlannedCommitId(0),
         CommitDescription::new("Split commit", "Contains new hunk"),
         vec![
             PlannedChange::ExistingHunk(hunks[0].id),
@@ -1711,6 +1716,7 @@ fn test_plan_stores_file_mappings() {
     file_to_commits.insert("src/main.rs".to_string(), vec![head.clone()]);
 
     let planned = vec![PlannedCommit::new(
+        PlannedCommitId(0),
         CommitDescription::new("Test", "Test"),
         vec![PlannedChange::ExistingHunk(hunks[0].id)],
     )];

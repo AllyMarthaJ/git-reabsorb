@@ -37,7 +37,7 @@ pub use clusterer::{ClusterConfig, Clusterer};
 pub use orderer::GlobalOrderer;
 pub use planner::CommitPlanner;
 pub use types::*;
-pub use validator::{assign_orphans, deduplicate_across_commits, to_planned_commits, Validator};
+pub use validator::{assign_orphans, deduplicate_across_commits, Validator};
 
 use std::sync::Arc;
 
@@ -45,6 +45,7 @@ use log::{debug, info};
 
 use crate::features::Feature;
 use crate::llm::LlmClient;
+use crate::validation::{apply_deterministic_fixes, ValidationResult};
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
@@ -168,8 +169,7 @@ impl HierarchicalReorganizer {
 
         debug!("  Final: {} commits", final_commits.len());
 
-        // Convert to PlannedCommits
-        Ok(to_planned_commits(final_commits))
+        Ok(final_commits)
     }
 }
 
@@ -184,6 +184,24 @@ impl Reorganizer for HierarchicalReorganizer {
         }
 
         self.run_pipeline(source_commits, hunks)
+    }
+
+    fn fix_plan(
+        &self,
+        commits: Vec<PlannedCommit>,
+        _validation: &ValidationResult,
+        source_commits: &[SourceCommit],
+        hunks: &[Hunk],
+    ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
+        if Feature::AttemptValidationFix.is_enabled() {
+            // Apply deterministic fixes (deduplication, orphan assignment)
+            debug!("Applying deterministic fixes to hierarchical plan...");
+            Ok(apply_deterministic_fixes(commits, hunks))
+        } else {
+            // Retry from scratch
+            debug!("Retrying hierarchical plan from scratch...");
+            self.plan(source_commits, hunks)
+        }
     }
 
     fn name(&self) -> &'static str {
