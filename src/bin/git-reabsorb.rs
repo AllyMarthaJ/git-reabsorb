@@ -24,7 +24,7 @@ fn main() {
     };
     env_logger::Builder::new()
         .filter_level(log_level)
-        .format_target(false)
+        .format_target(true)
         .format_timestamp(None)
         .init();
 
