@@ -219,7 +219,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 plan_path.display()
             )));
         } else {
-            info!("Applying saved plan (strategy: {})", plan.strategy);
+            info!("Applying saved plan (strategy: {:?})", plan.strategy);
         }
 
         // For fresh apply (not resume), we need to reset to base
@@ -340,7 +340,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             &file_to_commits,
             &file_changes,
         )?;
-        info!("Strategy: {}", plan.strategy_name);
+        info!("Strategy: {:?}", plan.strategy);
         print_planned_commits(&plan.planned_commits, 0);
 
         // Dry run: just show the plan, no disk writes
@@ -434,7 +434,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         }
 
         let plan = self.plan_store.load()?;
-        info!("Strategy: {}", plan.strategy);
+        info!("Strategy: {:?}", plan.strategy);
         info!("Base SHA: {}", short_sha(&plan.base_sha));
         info!("Original HEAD: {}", short_sha(&plan.original_head));
         info!(
