@@ -87,3 +87,18 @@ pub struct FixDuplicateResponse {
     pub hunk_id: usize,
     pub chosen_commit_index: usize,
 }
+
+/// Response for fixing overlapping hunk assignments
+///
+/// When two hunks have overlapping line ranges and are in different commits,
+/// the LLM decides which commit should contain both hunks.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FixOverlappingResponse {
+    /// The hunk IDs that overlap
+    #[allow(dead_code)]
+    pub hunk_a: usize,
+    #[allow(dead_code)]
+    pub hunk_b: usize,
+    /// The commit index that should contain both overlapping hunks
+    pub chosen_commit_index: usize,
+}

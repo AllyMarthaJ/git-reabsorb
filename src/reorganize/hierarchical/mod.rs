@@ -189,19 +189,30 @@ impl Reorganizer for HierarchicalReorganizer {
     fn fix_plan(
         &self,
         commits: Vec<PlannedCommit>,
-        _validation: &ValidationResult,
+        validation: &ValidationResult,
         source_commits: &[SourceCommit],
         hunks: &[Hunk],
     ) -> Result<Vec<PlannedCommit>, ReorganizeError> {
-        if Feature::AttemptValidationFix.is_enabled() {
-            // Apply deterministic fixes (deduplication, orphan assignment)
-            debug!("Applying deterministic fixes to hierarchical plan...");
-            Ok(apply_deterministic_fixes(commits, hunks))
-        } else {
+        if !Feature::AttemptValidationFix.is_enabled() {
             // Retry from scratch
             debug!("Retrying hierarchical plan from scratch...");
-            self.plan(source_commits, hunks)
+            return self.plan(source_commits, hunks);
         }
+
+        // Check for overlapping hunks - these require re-planning since they indicate
+        // a fundamental error in how hunks were grouped
+        let overlapping = validation.overlapping_hunks();
+        if !overlapping.is_empty() {
+            debug!(
+                "Found {} overlapping hunk pairs, re-planning from scratch...",
+                overlapping.len()
+            );
+            return self.plan(source_commits, hunks);
+        }
+
+        // Apply deterministic fixes (deduplication, orphan assignment)
+        debug!("Applying deterministic fixes to hierarchical plan...");
+        Ok(apply_deterministic_fixes(commits, hunks))
     }
 
     fn name(&self) -> &'static str {
