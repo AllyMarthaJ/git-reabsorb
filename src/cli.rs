@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::features::Feature;
+
 #[derive(Parser, Debug)]
 #[command(name = "git-reabsorb")]
 #[command(about = "Reorganize git commits by unstaging and recommitting")]
@@ -26,9 +28,9 @@ pub struct Cli {
         value_delimiter = ',',
         env = "GIT_REABSORB_FEATURES"
     )]
-    pub features: Option<Vec<String>>,
+    pub features: Option<Vec<Feature>>,
 
-    /// Increase verbosity (-v for debug, -vv for trace)
+    /// Increase verbosity (-v for debug, -vv for trace with LLM streaming)
     #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
     pub verbosity: u8,
 
