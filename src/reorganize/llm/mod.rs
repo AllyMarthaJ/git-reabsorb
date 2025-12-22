@@ -25,7 +25,7 @@ use crate::reorganize::{ReorganizeError, Reorganizer};
 use crate::utils::extract_json_str;
 use crate::validation::ValidationResult;
 
-use types::{FixDuplicateResponse, FixUnassignedResponse, HunkAssignment};
+use types::{FixDuplicateResponse, FixOverlappingResponse, FixUnassignedResponse, HunkAssignment};
 
 pub struct LlmReorganizer {
     client: Box<dyn LlmClient>,
@@ -199,6 +199,84 @@ impl Reorganizer for LlmReorganizer {
                 }
                 Err(e) => {
                     debug!("  LLM fix failed for duplicate hunk {}: {}", hunk_id.0, e);
+                }
+            }
+        }
+
+        // Fix overlapping hunks using LLM
+        for (file_path, hunk_a, commit_a, hunk_b, commit_b) in validation.overlapping_hunks() {
+            debug!(
+                "Fixing overlapping hunks {} and {} in {} (commits {:?} and {:?})",
+                hunk_a.0,
+                hunk_b.0,
+                file_path.display(),
+                commit_a,
+                commit_b
+            );
+
+            // Convert commit IDs to indices
+            let commit_a_idx = commits.iter().position(|c| c.id == commit_a);
+            let commit_b_idx = commits.iter().position(|c| c.id == commit_b);
+
+            let (Some(commit_a_idx), Some(commit_b_idx)) = (commit_a_idx, commit_b_idx) else {
+                debug!("  Could not find commit indices, skipping");
+                continue;
+            };
+
+            let fix_prompt = prompt::build_fix_overlapping_prompt(
+                &context,
+                &commits,
+                hunk_a.0,
+                commit_a_idx,
+                hunk_b.0,
+                commit_b_idx,
+                &file_path,
+            );
+
+            match self.client.complete(&fix_prompt) {
+                Ok(response) => {
+                    if let Some(json_str) = extract_json_str(&response) {
+                        if let Ok(fix) = serde_json::from_str::<FixOverlappingResponse>(json_str) {
+                            // Move both hunks to the chosen commit
+                            let (keep_idx, move_idx, move_hunk) =
+                                if fix.chosen_commit_index == commit_a_idx {
+                                    (commit_a_idx, commit_b_idx, hunk_b)
+                                } else {
+                                    (commit_b_idx, commit_a_idx, hunk_a)
+                                };
+
+                            // Remove the hunk from the non-chosen commit
+                            if let Some(commit) = commits.get_mut(move_idx) {
+                                commit.changes.retain(|c| {
+                                    !matches!(c, PlannedChange::ExistingHunk(id) if *id == move_hunk)
+                                });
+                            }
+
+                            // Add the hunk to the chosen commit if not already there
+                            if let Some(commit) = commits.get_mut(keep_idx) {
+                                let already_has =
+                                    commit.changes.iter().any(|c| {
+                                        matches!(c, PlannedChange::ExistingHunk(id) if *id == move_hunk)
+                                    });
+                                if !already_has {
+                                    commit
+                                        .changes
+                                        .push(PlannedChange::ExistingHunk(move_hunk));
+                                }
+                            }
+
+                            debug!(
+                                "  Moved hunk {} to commit index {} (with hunk {})",
+                                move_hunk.0, keep_idx, if move_hunk == hunk_b { hunk_a.0 } else { hunk_b.0 }
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "  LLM fix failed for overlapping hunks {} and {}: {}",
+                        hunk_a.0, hunk_b.0, e
+                    );
                 }
             }
         }

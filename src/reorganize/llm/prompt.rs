@@ -279,6 +279,108 @@ Output ONLY the JSON.
     prompt
 }
 
+/// Build a prompt to resolve overlapping hunk assignments
+///
+/// When two hunks have overlapping line ranges in the same file but are assigned
+/// to different commits, we need to move them to the same commit to avoid conflicts.
+pub fn build_fix_overlapping_prompt(
+    context: &LlmContext,
+    commits: &[crate::models::PlannedCommit],
+    hunk_a_id: usize,
+    commit_a_idx: usize,
+    hunk_b_id: usize,
+    commit_b_idx: usize,
+    file_path: &std::path::Path,
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(&format!(
+        r#"You previously created a commit plan, but hunks {} and {} have OVERLAPPING line ranges
+in the same file ({}) and were assigned to different commits.
+
+Overlapping hunks in different commits will cause conflicts when applied sequentially.
+Both hunks must be in the SAME commit to be applied together correctly.
+
+## The Overlapping Hunks
+
+"#,
+        hunk_a_id,
+        hunk_b_id,
+        file_path.display()
+    ));
+
+    // Show hunk A
+    if let Some(hunk) = context.hunks.iter().find(|h| h.id == hunk_a_id) {
+        prompt.push_str(&format!(
+            "### Hunk {} (currently in Commit {})\n",
+            hunk.id, commit_a_idx
+        ));
+        prompt.push_str(&format!(
+            "Lines: old @{} (count: {})\n```diff\n{}\n```\n\n",
+            hunk.old_start,
+            context
+                .hunks
+                .iter()
+                .find(|h| h.id == hunk_a_id)
+                .map(|_| "see diff")
+                .unwrap_or("?"),
+            hunk.diff_content
+        ));
+    }
+
+    // Show hunk B
+    if let Some(hunk) = context.hunks.iter().find(|h| h.id == hunk_b_id) {
+        prompt.push_str(&format!(
+            "### Hunk {} (currently in Commit {})\n",
+            hunk.id, commit_b_idx
+        ));
+        prompt.push_str(&format!(
+            "Lines: old @{}\n```diff\n{}\n```\n\n",
+            hunk.old_start, hunk.diff_content
+        ));
+    }
+
+    prompt.push_str("## The Commits\n\n");
+
+    // Show commit A
+    if let Some(commit) = commits.get(commit_a_idx) {
+        prompt.push_str(&format!(
+            "### Commit {} - \"{}\"\n{}\n\n",
+            commit_a_idx, commit.description.short, commit.description.long
+        ));
+    }
+
+    // Show commit B
+    if let Some(commit) = commits.get(commit_b_idx) {
+        prompt.push_str(&format!(
+            "### Commit {} - \"{}\"\n{}\n\n",
+            commit_b_idx, commit.description.short, commit.description.long
+        ));
+    }
+
+    prompt.push_str(&format!(
+        r#"## Your Task
+
+Choose which commit should contain BOTH overlapping hunks ({} and {}).
+Consider which commit's purpose better matches both changes.
+
+Output a JSON object:
+
+```json
+{{"hunk_a": {}, "hunk_b": {}, "chosen_commit_index": N}}
+```
+
+Where N is the index (0-based) of the commit that should contain both hunks.
+Output ONLY the JSON.
+
+```json
+"#,
+        hunk_a_id, hunk_b_id, hunk_a_id, hunk_b_id
+    ));
+
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
