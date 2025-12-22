@@ -13,11 +13,11 @@
 //! CLI arguments take precedence over environment variables.
 
 use std::env;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use log::debug;
+use log::{debug, trace};
 
 /// Available LLM providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -187,6 +187,13 @@ impl Default for ClaudeCliClient {
 
 impl LlmClient for ClaudeCliClient {
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        // Log the prompt at trace level
+        trace!("[claude prompt] -------- START --------");
+        for line in prompt.lines() {
+            trace!("[claude prompt] {}", line);
+        }
+        trace!("[claude prompt] -------- END --------");
+
         // Use stdin for prompt to avoid command line length limits
         let mut args = vec!["--print"];
 
@@ -212,28 +219,89 @@ impl LlmClient for ClaudeCliClient {
                 .map_err(|e| LlmError::ClientError(format!("Failed to write to stdin: {}", e)))?;
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| LlmError::ClientError(format!("Failed to wait for claude CLI: {}", e)))?;
+        // Stream output in realtime at trace level (-vv)
+        let stream_output = log::log_enabled!(log::Level::Trace);
 
-        if !output.status.success() {
+        if stream_output {
+            // Stream stdout and stderr while accumulating the response
+            let stdout = child.stdout.take().ok_or_else(|| {
+                LlmError::ClientError("Failed to capture stdout".to_string())
+            })?;
+            let stderr = child.stderr.take().ok_or_else(|| {
+                LlmError::ClientError("Failed to capture stderr".to_string())
+            })?;
+
+            // Spawn thread to read stderr
+            let stderr_handle = std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                let mut stderr_output = String::new();
+                for line in reader.lines() {
+                    if let Ok(line) = line {
+                        eprintln!("[claude stderr] {}", line);
+                        stderr_output.push_str(&line);
+                        stderr_output.push('\n');
+                    }
+                }
+                stderr_output
+            });
+
+            // Read stdout line by line, printing and accumulating
+            let reader = BufReader::new(stdout);
+            let mut response = String::new();
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        trace!("[claude] {}", line);
+                        response.push_str(&line);
+                        response.push('\n');
+                    }
+                    Err(e) => {
+                        debug!("Error reading stdout line: {}", e);
+                    }
+                }
+            }
+
+            // Wait for stderr thread
+            let _ = stderr_handle.join();
+
+            // Wait for process to finish
+            let status = child.wait().map_err(|e| {
+                LlmError::ClientError(format!("Failed to wait for claude CLI: {}", e))
+            })?;
+
+            if !status.success() {
+                return Err(LlmError::ClientError(format!(
+                    "claude CLI failed with exit code: {:?}",
+                    status.code()
+                )));
+            }
+
+            Ok(response)
+        } else {
+            // Buffered mode - wait for all output at once
+            let output = child
+                .wait_with_output()
+                .map_err(|e| LlmError::ClientError(format!("Failed to wait for claude CLI: {}", e)))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return Err(LlmError::ClientError(format!(
+                    "claude CLI failed: \n\nstderr: {}\n\n stdout: {}",
+                    stderr, stdout
+                )));
+            }
+
+            let response = String::from_utf8_lossy(&output.stdout).to_string();
+
+            // If stderr has content, include it in debug output
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(LlmError::ClientError(format!(
-                "claude CLI failed: \n\nstderr: {}\n\n stdout: {}",
-                stderr, stdout
-            )));
+            if !stderr.trim().is_empty() {
+                debug!("Claude CLI stderr: {}", stderr.trim());
+            }
+
+            Ok(response)
         }
-
-        let response = String::from_utf8_lossy(&output.stdout).to_string();
-
-        // If stderr has content, include it in debug output
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.trim().is_empty() {
-            debug!("Claude CLI stderr: {}", stderr.trim());
-        }
-
-        Ok(response)
     }
 }
 
@@ -273,6 +341,13 @@ impl Default for OpenCodeClient {
 
 impl LlmClient for OpenCodeClient {
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        // Log the prompt at trace level
+        trace!("[opencode prompt] -------- START --------");
+        for line in prompt.lines() {
+            trace!("[opencode prompt] {}", line);
+        }
+        trace!("[opencode prompt] -------- END --------");
+
         // opencode uses: opencode run "prompt" [-m provider/model] --format json
         // Model format is "provider/model" (e.g., "lmstudio/qwen/qwen3-coder-30b")
         let mut args = vec!["run", prompt, "--format", "json"];
