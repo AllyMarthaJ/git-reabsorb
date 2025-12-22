@@ -21,6 +21,9 @@ pub enum Feature {
     AttemptValidationFix,
     /// Use gitabsorb to absorb existing commits.
     Absorb,
+    /// Use file-based I/O for LLM prompts to reduce token usage and handle larger patches.
+    /// Writes hunks to a temp file and instructs LLM to read from it.
+    FileBasedLlmIo,
 }
 
 impl Feature {

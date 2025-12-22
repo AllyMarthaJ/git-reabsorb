@@ -7,6 +7,7 @@
 //!
 //! Generic LLM infrastructure lives in `crate::llm`.
 
+mod file_io;
 mod parser;
 mod prompt;
 mod types;
@@ -52,28 +53,68 @@ impl LlmReorganizer {
         hunks: &[Hunk],
     ) -> Result<Vec<PlannedCommit>, LlmError> {
         let context = prompt::build_context(source_commits, hunks);
-        let prompt_text = prompt::build_prompt(&context);
+
+        // Set up file-based I/O if feature is enabled
+        let (prompt_text, _file_session, use_file_io) = if Feature::FileBasedLlmIo.is_enabled() {
+            let session = file_io::LlmFileSession::new()?;
+
+            // Write hunks to input file
+            let hunks_content = prompt::build_hunks_file_content(&context);
+            session.write_input(&hunks_content)?;
+
+            debug!(
+                "File-based LLM I/O: input={}",
+                session.input_path.display()
+            );
+
+            // Build prompt that references the input file
+            let prompt = prompt::build_file_based_prompt(&context, &session.input_path);
+
+            (prompt, Some(session), true)
+        } else {
+            (prompt::build_prompt(&context), None, false)
+        };
+
         let mut last_error = None;
 
         for attempt in 1..=self.max_retries {
             info!("LLM attempt {}/{}...", attempt, self.max_retries);
             match self.client.complete(&prompt_text) {
-                Ok(response) => match parser::extract_json(&response) {
-                    Ok(llm_commits) => {
-                        // Convert to PlannedCommits immediately
-                        match parser::to_planned_commits(llm_commits, hunks) {
-                            Ok(commits) => return Ok(commits),
+                Ok(stdout_response) => {
+                    // Get response from file (via path in stdout) or directly from stdout
+                    let response = if use_file_io {
+                        match file_io::read_response_from_path(&stdout_response) {
+                            Ok(file_content) => {
+                                debug!("Read response from file path in stdout");
+                                file_content
+                            }
                             Err(e) => {
-                                debug!("Conversion error: {}", e);
+                                debug!("File read failed ({}), cannot proceed", e);
                                 last_error = Some(e);
+                                continue;
                             }
                         }
+                    } else {
+                        stdout_response
+                    };
+
+                    match parser::extract_json(&response) {
+                        Ok(llm_commits) => {
+                            // Convert to PlannedCommits immediately
+                            match parser::to_planned_commits(llm_commits, hunks) {
+                                Ok(commits) => return Ok(commits),
+                                Err(e) => {
+                                    debug!("Conversion error: {}", e);
+                                    last_error = Some(e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Parse error: {}", e);
+                            last_error = Some(e);
+                        }
                     }
-                    Err(e) => {
-                        debug!("Parse error: {}", e);
-                        last_error = Some(e);
-                    }
-                },
+                }
                 Err(e) => {
                     debug!("Client error: {}", e);
                     last_error = Some(e);

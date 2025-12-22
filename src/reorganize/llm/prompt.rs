@@ -1,5 +1,7 @@
 //! Prompt construction for LLM reorganization
 
+use std::path::Path;
+
 use crate::models::{Hunk, SourceCommit};
 use crate::utils::format_diff_lines;
 
@@ -135,6 +137,139 @@ Analyze the hunks above and reorganize them into logical commits. Output ONLY va
 ```json
 "#,
     );
+
+    prompt
+}
+
+/// Build the content for the hunks input file (file-based I/O mode).
+///
+/// This extracts the hunks section that would normally be embedded in the prompt.
+pub fn build_hunks_file_content(context: &LlmContext) -> String {
+    let mut content = String::new();
+
+    content.push_str("# Hunks to Reorganize\n\n");
+
+    for hunk in &context.hunks {
+        content.push_str(&format!("## Hunk {} - {}\n", hunk.id, hunk.file_path));
+        if !hunk.source_commit_shas.is_empty() {
+            content.push_str("Source commits:\n");
+            for sha in &hunk.source_commit_shas {
+                let commit_msg = context
+                    .source_commits
+                    .iter()
+                    .find(|c| {
+                        c.source_commit.sha.starts_with(sha)
+                            || sha.starts_with(&c.source_commit.sha)
+                    })
+                    .map(|c| c.source_commit.message.long.as_str())
+                    .unwrap_or("(unknown)");
+                content.push_str(&format!(
+                    "  - {} - {}\n",
+                    &sha[..8.min(sha.len())],
+                    commit_msg.lines().next().unwrap_or("(no message)")
+                ));
+            }
+        }
+        content.push_str(&format!(
+            "Lines: old @{}, new @{}\n```diff\n{}\n```\n\n",
+            hunk.old_start, hunk.new_start, hunk.diff_content
+        ));
+    }
+
+    content
+}
+
+/// Build a prompt that references an external file for input and asks Claude to write output to a file.
+///
+/// This reduces token usage by storing hunks in a file rather than embedding them in the prompt.
+/// Claude writes its response to a file of its choosing and outputs the path to stdout.
+pub fn build_file_based_prompt(context: &LlmContext, input_file_path: &Path) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(
+        r#"You are a git commit reorganizer. Your task is to analyze a set of code changes (hunks)
+and reorganize them into logical, well-structured commits.
+
+## Input
+
+You will receive:
+1. A list of original commits with their messages (for context, below)
+2. A list of hunks (code changes) in an EXTERNAL FILE (path provided below)
+
+## Output
+
+You must:
+1. Write a JSON file containing your reorganization plan
+2. Output ONLY a single line to stdout with the absolute path to that file
+
+The JSON file should contain:
+
+```json
+{
+  "commits": [
+    {
+      "short_description": "Brief commit message (50 chars or less)",
+      "long_description": "Detailed commit message explaining the change",
+      "changes": [
+        {"type": "hunk", "id": 0},
+        {"type": "hunk", "id": 1}
+      ]
+    }
+  ]
+}
+```
+
+## Change Types
+
+Each change in a commit can be one of:
+
+1. `{"type": "hunk", "id": N}` - Include the entire hunk with ID N
+2. `{"type": "partial", "hunk_id": N, "lines": [1, 2, 3]}` - Include only specific lines from hunk N (1-indexed)
+3. `{"type": "raw", "file_path": "path/to/file", "diff": "+new line\n-old line"}` - Raw diff content
+
+## Guidelines
+
+0. You should ALWAYS emphasise WHY a change was made, if that information was available.
+   The short description should contain a concise summary, and the long description
+   should elaborate on the reasoning. Avoid generic messages and short descriptions beginning
+   with "Add", "Fix", "Update", etc. without context.
+1. Group related changes together into logical commits
+2. Each commit should represent a single logical change (feature, fix, refactor, etc.)
+3. Write clear, descriptive commit messages
+4. Consider file relationships and dependencies when grouping
+5. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
+6. You may split hunks using "partial" if a hunk contains unrelated changes
+7. Preserve the semantic meaning of changes - don't break functionality
+
+## Original Commits (for context)
+
+"#,
+    );
+
+    for commit in &context.source_commits {
+        prompt.push_str(&format!(
+            "### Commit {}\n```\n{}\n```\n\n",
+            &commit.source_commit.sha[..8.min(commit.source_commit.sha.len())],
+            commit.source_commit.message.long
+        ));
+    }
+
+    prompt.push_str(&format!(
+        r#"## Hunks File
+
+Read the hunks from this file: {}
+
+The file contains all hunk details including IDs, file paths, source commits, and diff content.
+
+## Your Task
+
+1. Read the hunks from the input file
+2. Analyze and reorganize them into logical commits
+3. Write your JSON response to a file
+4. Output ONLY the absolute path to that file (nothing else)
+"#,
+        input_file_path.display()
+    ));
 
     prompt
 }
