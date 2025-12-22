@@ -75,14 +75,10 @@ impl Features {
     }
 
     /// Merge with CLI overrides.
-    pub fn with_overrides(mut self, cli_features: Option<&[String]>) -> Self {
+    pub fn with_overrides(mut self, cli_features: Option<&[Feature]>) -> Self {
         if let Some(features) = cli_features {
-            for name in features {
-                if let Ok(feature) = Feature::from_str(name, true) {
-                    self.enable(feature);
-                } else {
-                    warn!("Unknown feature '{}' in --features", name);
-                }
+            for feature in features {
+                self.enable(*feature);
             }
         }
         self
@@ -135,7 +131,7 @@ mod tests {
         let features = Features::new();
         assert!(!features.is_enabled(Feature::AttemptValidationFix));
 
-        let features = features.with_overrides(Some(&["attempt-validation-fix".to_string()]));
+        let features = features.with_overrides(Some(&[Feature::AttemptValidationFix]));
         assert!(features.is_enabled(Feature::AttemptValidationFix));
     }
 }
