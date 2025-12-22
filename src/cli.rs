@@ -20,7 +20,6 @@ pub struct Cli {
     pub execution: ExecutionArgs,
 
     /// Enable experimental features (comma-separated)
-    /// Available: attempt-validation-fix
     /// Can also be set via GIT_REABSORB_FEATURES env var
     #[arg(
         long = "features",
