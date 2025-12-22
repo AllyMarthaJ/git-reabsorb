@@ -8,8 +8,9 @@ use crate::cancel;
 use crate::cli::{ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs};
 use crate::patch::ParseError;
 use crate::editor::{Editor, EditorError};
+use crate::features::Feature;
 use crate::git::{GitError, GitOps};
-use crate::llm::LlmConfig;
+use crate::llm::{LlmConfig, ToolCapability};
 use crate::models::{PlannedCommit, Strategy};
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 use crate::reorganize::{
@@ -45,13 +46,26 @@ impl StrategyFactory {
             Strategy::ByFile => Box::new(GroupByFile),
             Strategy::Squash => Box::new(Squash),
             Strategy::Llm => {
-                Box::new(LlmReorganizer::new(self.llm_config.create_boxed_client()))
+                let config = self.config_with_file_io_tools();
+                Box::new(LlmReorganizer::new(config.create_boxed_client()))
             }
             Strategy::Hierarchical => {
-                let client = self.llm_config.create_client();
+                let config = self.config_with_file_io_tools();
+                let client = config.create_client();
                 Box::new(HierarchicalReorganizer::new(Some(client)))
             }
             Strategy::Absorb => Box::new(Absorb),
+        }
+    }
+
+    /// Returns config with FileIo capability if FileBasedLlmIo feature is enabled.
+    fn config_with_file_io_tools(&self) -> LlmConfig {
+        if Feature::FileBasedLlmIo.is_enabled() {
+            self.llm_config
+                .clone()
+                .with_capabilities(vec![ToolCapability::FileIo])
+        } else {
+            self.llm_config.clone()
         }
     }
 }

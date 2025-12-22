@@ -53,6 +53,46 @@ impl std::str::FromStr for LlmProvider {
     }
 }
 
+/// Tool capability sets that can be granted to LLM clients.
+///
+/// Each capability represents a logical grouping of related tools.
+/// The actual tool names differ between providers (Claude vs OpenCode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCapability {
+    /// File read/write operations.
+    /// - Claude: Read, Write
+    /// - OpenCode: read, write, edit
+    FileIo,
+}
+
+impl ToolCapability {
+    /// Convert to Claude CLI tool names.
+    pub fn to_claude_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::FileIo => &["Read", "Write"],
+        }
+    }
+
+    /// Convert to OpenCode CLI tool names.
+    pub fn to_opencode_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::FileIo => &["read", "write", "edit"],
+        }
+    }
+}
+
+/// Convert a slice of capabilities to tool names for a specific provider.
+fn capabilities_to_tools(capabilities: &[ToolCapability], provider: LlmProvider) -> Vec<String> {
+    capabilities
+        .iter()
+        .flat_map(|cap| match provider {
+            LlmProvider::Claude => cap.to_claude_tools().iter().copied(),
+            LlmProvider::OpenCode => cap.to_opencode_tools().iter().copied(),
+        })
+        .map(String::from)
+        .collect()
+}
+
 /// Configuration for LLM clients.
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
@@ -62,6 +102,8 @@ pub struct LlmConfig {
     pub model: Option<String>,
     /// Backend provider for opencode (e.g., "lmstudio", "ollama").
     pub opencode_backend: Option<String>,
+    /// Tool capabilities to grant the LLM.
+    pub capabilities: Option<Vec<ToolCapability>>,
 }
 
 impl LlmConfig {
@@ -89,6 +131,7 @@ impl LlmConfig {
             provider,
             model,
             opencode_backend,
+            capabilities: None,
         }
     }
 
@@ -107,6 +150,12 @@ impl LlmConfig {
     /// Set the opencode backend.
     pub fn with_opencode_backend(mut self, backend: impl Into<String>) -> Self {
         self.opencode_backend = Some(backend.into());
+        self
+    }
+
+    /// Set tool capabilities for the LLM.
+    pub fn with_capabilities(mut self, capabilities: Vec<ToolCapability>) -> Self {
+        self.capabilities = Some(capabilities);
         self
     }
 
@@ -129,28 +178,41 @@ impl LlmConfig {
         self
     }
 
+    /// Convert capabilities to tool names for the configured provider.
+    fn allowed_tools(&self) -> Option<Vec<String>> {
+        self.capabilities
+            .as_ref()
+            .map(|caps| capabilities_to_tools(caps, self.provider))
+    }
+
     /// Create an LLM client from this configuration.
     pub fn create_client(&self) -> Arc<dyn LlmClient> {
+        let allowed_tools = self.allowed_tools();
         match self.provider {
             LlmProvider::Claude => Arc::new(ClaudeCliClient {
                 model: self.model.clone(),
+                allowed_tools,
             }),
             LlmProvider::OpenCode => Arc::new(OpenCodeClient {
                 model: self.model.clone(),
                 backend: self.opencode_backend.clone(),
+                allowed_tools,
             }),
         }
     }
 
     /// Create a boxed LLM client from this configuration.
     pub fn create_boxed_client(&self) -> Box<dyn LlmClient> {
+        let allowed_tools = self.allowed_tools();
         match self.provider {
             LlmProvider::Claude => Box::new(ClaudeCliClient {
                 model: self.model.clone(),
+                allowed_tools,
             }),
             LlmProvider::OpenCode => Box::new(OpenCodeClient {
                 model: self.model.clone(),
                 backend: self.opencode_backend.clone(),
+                allowed_tools,
             }),
         }
     }
@@ -165,16 +227,21 @@ pub trait LlmClient: Send + Sync {
 /// Claude CLI client implementation.
 pub struct ClaudeCliClient {
     pub model: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 impl ClaudeCliClient {
     pub fn new() -> Self {
-        Self { model: None }
+        Self {
+            model: None,
+            allowed_tools: None,
+        }
     }
 
     pub fn with_model(model: impl Into<String>) -> Self {
         Self {
             model: Some(model.into()),
+            allowed_tools: None,
         }
     }
 }
@@ -202,6 +269,16 @@ impl LlmClient for ClaudeCliClient {
             model_str = model.clone();
             args.push("--model");
             args.push(&model_str);
+        }
+
+        // Add allowed tools if specified (comma-separated)
+        let tools_str;
+        if let Some(ref tools) = self.allowed_tools {
+            if !tools.is_empty() {
+                tools_str = tools.join(",");
+                args.push("--allowedTools");
+                args.push(&tools_str);
+            }
         }
 
         let mut child = Command::new("claude")
@@ -310,6 +387,7 @@ pub struct OpenCodeClient {
     pub model: Option<String>,
     /// Backend provider (e.g., "lmstudio", "ollama").
     pub backend: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 impl OpenCodeClient {
@@ -317,6 +395,7 @@ impl OpenCodeClient {
         Self {
             model: None,
             backend: None,
+            allowed_tools: None,
         }
     }
 
@@ -324,6 +403,7 @@ impl OpenCodeClient {
         Self {
             model: Some(model.into()),
             backend: None,
+            allowed_tools: None,
         }
     }
 
@@ -378,6 +458,16 @@ impl LlmClient for OpenCodeClient {
             }
             (None, None) => {
                 // Use opencode defaults
+            }
+        }
+
+        // Add allowed tools if specified (comma-separated)
+        let tools_str;
+        if let Some(ref tools) = self.allowed_tools {
+            if !tools.is_empty() {
+                tools_str = tools.join(",");
+                args.push("--allowedTools");
+                args.push(&tools_str);
             }
         }
 
