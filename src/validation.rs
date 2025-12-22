@@ -51,6 +51,15 @@ pub enum ValidationIssue {
 
     /// Cyclic dependency detected among commits
     CyclicDependency { commit_ids: Vec<PlannedCommitId> },
+
+    /// Hunks in different commits have overlapping line ranges in the same file
+    OverlappingHunks {
+        file_path: std::path::PathBuf,
+        hunk_a: HunkId,
+        commit_a: PlannedCommitId,
+        hunk_b: HunkId,
+        commit_b: PlannedCommitId,
+    },
 }
 
 impl std::fmt::Display for ValidationIssue {
@@ -102,6 +111,23 @@ impl std::fmt::Display for ValidationIssue {
                 let commits: Vec<_> = commit_ids.iter().map(|c| c.to_string()).collect();
                 write!(f, "cyclic dependency: {}", commits.join(" -> "))
             }
+            Self::OverlappingHunks {
+                file_path,
+                hunk_a,
+                commit_a,
+                hunk_b,
+                commit_b,
+            } => {
+                write!(
+                    f,
+                    "overlapping hunks in {}: {} (commit {}) and {} (commit {})",
+                    file_path.display(),
+                    hunk_a,
+                    commit_a,
+                    hunk_b,
+                    commit_b
+                )
+            }
         }
     }
 }
@@ -117,7 +143,7 @@ impl ValidationResult {
         self.issues.is_empty()
     }
 
-    /// Check if there are any fixable issues (unassigned hunks, duplicates)
+    /// Check if there are any fixable issues (unassigned hunks, duplicates, overlapping)
     pub fn has_fixable_issues(&self) -> bool {
         self.issues.iter().any(|issue| {
             matches!(
@@ -125,6 +151,7 @@ impl ValidationResult {
                 ValidationIssue::UnassignedHunks { .. }
                     | ValidationIssue::DuplicateHunkAcrossCommits { .. }
                     | ValidationIssue::DuplicateHunkInCommit { .. }
+                    | ValidationIssue::OverlappingHunks { .. }
             )
         })
     }
@@ -147,6 +174,37 @@ impl ValidationResult {
             .filter_map(|issue| {
                 if let ValidationIssue::DuplicateHunkAcrossCommits { hunk_id, commit_ids } = issue {
                     Some((*hunk_id, commit_ids.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get overlapping hunk issues
+    ///
+    /// Returns tuples of (file_path, hunk_a, commit_a, hunk_b, commit_b) for each overlap.
+    pub fn overlapping_hunks(
+        &self,
+    ) -> Vec<(
+        std::path::PathBuf,
+        HunkId,
+        PlannedCommitId,
+        HunkId,
+        PlannedCommitId,
+    )> {
+        self.issues
+            .iter()
+            .filter_map(|issue| {
+                if let ValidationIssue::OverlappingHunks {
+                    file_path,
+                    hunk_a,
+                    commit_a,
+                    hunk_b,
+                    commit_b,
+                } = issue
+                {
+                    Some((file_path.clone(), *hunk_a, *commit_a, *hunk_b, *commit_b))
                 } else {
                     None
                 }
@@ -249,6 +307,51 @@ pub fn validate_plan(commits: &[PlannedCommit], hunks: &[Hunk]) -> ValidationRes
     // Check for cyclic dependencies
     if let Some(cycle) = detect_cycle(commits) {
         issues.push(ValidationIssue::CyclicDependency { commit_ids: cycle });
+    }
+
+    // Check for overlapping hunks across different commits
+    // Build map: file_path -> [(hunk, commit_id)]
+    let mut hunks_by_file: HashMap<&std::path::Path, Vec<(&Hunk, PlannedCommitId)>> = HashMap::new();
+    for commit in commits {
+        for change in &commit.changes {
+            if let PlannedChange::ExistingHunk(hunk_id) = change {
+                if let Some(hunk) = hunks.iter().find(|h| h.id == *hunk_id) {
+                    hunks_by_file
+                        .entry(hunk.file_path.as_path())
+                        .or_default()
+                        .push((hunk, commit.id));
+                }
+            }
+        }
+    }
+
+    // For each file, check for overlapping line ranges between hunks in different commits
+    for (file_path, file_hunks) in &hunks_by_file {
+        for (i, (hunk_a, commit_a)) in file_hunks.iter().enumerate() {
+            for (hunk_b, commit_b) in file_hunks.iter().skip(i + 1) {
+                // Only check hunks in different commits
+                if commit_a == commit_b {
+                    continue;
+                }
+
+                // Check if line ranges overlap (using old_start/old_count for the source positions)
+                let a_start = hunk_a.old_start;
+                let a_end = hunk_a.old_start + hunk_a.old_count;
+                let b_start = hunk_b.old_start;
+                let b_end = hunk_b.old_start + hunk_b.old_count;
+
+                // Ranges overlap if one starts before the other ends
+                if a_start < b_end && b_start < a_end {
+                    issues.push(ValidationIssue::OverlappingHunks {
+                        file_path: file_path.to_path_buf(),
+                        hunk_a: hunk_a.id,
+                        commit_a: *commit_a,
+                        hunk_b: hunk_b.id,
+                        commit_b: *commit_b,
+                    });
+                }
+            }
+        }
     }
 
     ValidationResult { issues }
@@ -378,12 +481,15 @@ mod tests {
     use std::path::PathBuf;
 
     fn make_hunk(id: usize) -> Hunk {
+        // Use unique non-overlapping positions based on ID
+        // hunk 0: lines 1-1, hunk 1: lines 11-11, hunk 2: lines 21-21, etc.
+        let start = (id * 10 + 1) as u32;
         Hunk {
             id: HunkId(id),
             file_path: PathBuf::from("test.rs"),
-            old_start: 1,
+            old_start: start,
             old_count: 1,
-            new_start: 1,
+            new_start: start,
             new_count: 2,
             lines: vec![
                 DiffLine::Context("ctx".into()),
@@ -507,6 +613,88 @@ mod tests {
             .issues
             .iter()
             .any(|i| matches!(i, ValidationIssue::CyclicDependency { .. })));
+    }
+
+    #[test]
+    fn test_overlapping_hunks_across_commits() {
+        // Two hunks in the same file with overlapping line ranges
+        let hunk_a = Hunk {
+            id: HunkId(0),
+            file_path: PathBuf::from("test.rs"),
+            old_start: 10,
+            old_count: 5, // Lines 10-14
+            new_start: 10,
+            new_count: 6,
+            lines: vec![DiffLine::Added("a".into())],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
+        };
+        let hunk_b = Hunk {
+            id: HunkId(1),
+            file_path: PathBuf::from("test.rs"),
+            old_start: 12,
+            old_count: 5, // Lines 12-16 (overlaps with 10-14)
+            new_start: 13,
+            new_count: 6,
+            lines: vec![DiffLine::Added("b".into())],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
+        };
+        let hunks = vec![hunk_a, hunk_b];
+
+        // Assign overlapping hunks to different commits
+        let commits = vec![
+            make_commit(0, "First", vec![0]),
+            make_commit(1, "Second", vec![1]),
+        ];
+
+        let result = validate_plan(&commits, &hunks);
+        assert!(!result.is_valid());
+        assert!(result
+            .issues
+            .iter()
+            .any(|i| matches!(i, ValidationIssue::OverlappingHunks { .. })));
+    }
+
+    #[test]
+    fn test_non_overlapping_hunks_ok() {
+        // Two hunks in the same file with non-overlapping line ranges
+        let hunk_a = Hunk {
+            id: HunkId(0),
+            file_path: PathBuf::from("test.rs"),
+            old_start: 10,
+            old_count: 5, // Lines 10-14
+            new_start: 10,
+            new_count: 6,
+            lines: vec![DiffLine::Added("a".into())],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
+        };
+        let hunk_b = Hunk {
+            id: HunkId(1),
+            file_path: PathBuf::from("test.rs"),
+            old_start: 20,
+            old_count: 5, // Lines 20-24 (no overlap)
+            new_start: 21,
+            new_count: 6,
+            lines: vec![DiffLine::Added("b".into())],
+            likely_source_commits: vec![],
+            old_missing_newline_at_eof: false,
+            new_missing_newline_at_eof: false,
+        };
+        let hunks = vec![hunk_a, hunk_b];
+
+        // Assign non-overlapping hunks to different commits - should be valid
+        let commits = vec![
+            make_commit(0, "First", vec![0]),
+            make_commit(1, "Second", vec![1]),
+        ];
+
+        let result = validate_plan(&commits, &hunks);
+        assert!(result.is_valid(), "Issues: {:?}", result.issues);
     }
 
     #[test]
