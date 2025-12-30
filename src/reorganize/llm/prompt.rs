@@ -516,6 +516,186 @@ Output ONLY the JSON.
     prompt
 }
 
+/// Build a prompt to fix a commit message based on assessment feedback
+///
+/// Takes the current commit, the assessment feedback, and the hunks for context.
+pub fn build_fix_message_prompt(
+    commit: &crate::models::PlannedCommit,
+    assessment: &crate::assessment::types::CommitAssessment,
+    hunks: &[crate::models::Hunk],
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(
+        r#"You are a git commit message editor. Your task is to improve a commit message based on
+quality assessment feedback.
+
+## Current Commit
+
+"#,
+    );
+
+    prompt.push_str(&format!(
+        "**Short message**: {}\n\n**Long message**:\n```\n{}\n```\n\n",
+        commit.description.short, commit.description.long
+    ));
+
+    // Show the assessment feedback
+    prompt.push_str("## Assessment Feedback\n\n");
+    prompt.push_str(&format!(
+        "**Overall Score**: {:.1}%\n\n",
+        assessment.overall_score * 100.0
+    ));
+
+    for score in &assessment.criterion_scores {
+        prompt.push_str(&format!(
+            "### {} (Level {}/5)\n\n**Rationale**: {}\n\n",
+            score.criterion_id.name(),
+            score.level,
+            score.rationale
+        ));
+
+        if !score.suggestions.is_empty() {
+            prompt.push_str("**Suggestions**:\n");
+            for suggestion in &score.suggestions {
+                prompt.push_str(&format!("- {}\n", suggestion));
+            }
+            prompt.push('\n');
+        }
+    }
+
+    // Show relevant hunks for context
+    prompt.push_str("## Changes in This Commit (for context)\n\n");
+
+    for change in &commit.changes {
+        if let crate::models::PlannedChange::ExistingHunk(hunk_id) = change {
+            if let Some(hunk) = hunks.iter().find(|h| h.id == *hunk_id) {
+                prompt.push_str(&format!(
+                    "### {} (hunk {})\n```diff\n{}\n```\n\n",
+                    hunk.file_path.display(),
+                    hunk_id.0,
+                    format_diff_lines(&hunk.lines)
+                ));
+            }
+        }
+    }
+
+    prompt.push_str(
+        r#"## Your Task
+
+Rewrite the commit message to address the assessment feedback. The improved message should:
+
+1. Be clear and descriptive (short message ≤ 50 chars)
+2. Explain WHY the change was made, not just WHAT changed
+3. Provide context for reviewers and future maintainers
+4. Address any specific suggestions from the assessment
+
+Output a JSON object with the improved message:
+
+```json
+{
+  "description": {
+    "short": "Brief commit message (50 chars or less)",
+    "long": "Detailed commit message explaining the motivation and context"
+  }
+}
+```
+
+Output ONLY the JSON.
+
+```json
+"#,
+    );
+
+    prompt
+}
+
+/// Build a prompt for rewording an existing commit's message.
+///
+/// This is similar to `build_fix_message_prompt` but works with SourceCommit (actual git commits)
+/// rather than PlannedCommit. Used by the `reword` command.
+pub fn build_reword_prompt(
+    commit: &crate::models::SourceCommit,
+    assessment: &crate::assessment::types::CommitAssessment,
+    diff_content: &str,
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(
+        r#"You are a git commit message editor. Your task is to improve a commit message based on
+quality assessment feedback.
+
+## Current Commit
+
+"#,
+    );
+
+    prompt.push_str(&format!(
+        "**SHA**: {}\n\n**Short message**: {}\n\n**Long message**:\n```\n{}\n```\n\n",
+        &commit.sha[..8.min(commit.sha.len())],
+        commit.message.short,
+        commit.message.long
+    ));
+
+    // Show the assessment feedback
+    prompt.push_str("## Assessment Feedback\n\n");
+    prompt.push_str(&format!(
+        "**Overall Score**: {:.1}%\n\n",
+        assessment.overall_score * 100.0
+    ));
+
+    for score in &assessment.criterion_scores {
+        prompt.push_str(&format!(
+            "### {} (Level {}/5)\n\n**Rationale**: {}\n\n",
+            score.criterion_id.name(),
+            score.level,
+            score.rationale
+        ));
+
+        if !score.suggestions.is_empty() {
+            prompt.push_str("**Suggestions**:\n");
+            for suggestion in &score.suggestions {
+                prompt.push_str(&format!("- {}\n", suggestion));
+            }
+            prompt.push('\n');
+        }
+    }
+
+    // Show the diff for context
+    prompt.push_str("## Changes in This Commit (for context)\n\n```diff\n");
+    prompt.push_str(diff_content);
+    prompt.push_str("\n```\n\n");
+
+    prompt.push_str(
+        r#"## Your Task
+
+Rewrite the commit message to address the assessment feedback. The improved message should:
+
+1. Be clear and descriptive (short message ≤ 50 chars)
+2. Explain WHY the change was made, not just WHAT changed
+3. Provide context for reviewers and future maintainers
+4. Address any specific suggestions from the assessment
+
+Output a JSON object with the improved message:
+
+```json
+{
+  "description": {
+    "short": "Brief commit message (50 chars or less)",
+    "long": "Detailed commit message explaining the motivation and context"
+  }
+}
+```
+
+Output ONLY the JSON.
+
+```json
+"#,
+    );
+
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,9 @@ use log::{error, info, warn};
 
 use crate::assessment::{self, AssessmentEngine, CriterionId};
 use crate::cancel;
-use crate::cli::{ApplyArgs, AssessArgs, Command, CompareArgs, OutputFormat, PlanArgs};
+use crate::cli::{
+    ApplyArgs, AssessArgs, Command, CommitRange, CompareArgs, OutputFormat, PlanArgs, RewordArgs,
+};
 use crate::patch::ParseError;
 use crate::editor::{Editor, EditorError};
 use crate::features::Feature;
@@ -70,48 +72,6 @@ impl StrategyFactory {
     }
 }
 
-/// Inclusive/exclusive commit range (base is exclusive, head inclusive).
-#[derive(Clone, Debug)]
-pub struct CommitRange {
-    pub base: String,
-    pub head: String,
-}
-
-fn resolve_range<G: GitOps>(
-    git: &G,
-    range: Option<&str>,
-    base_branch: Option<&str>,
-) -> Result<CommitRange, GitError> {
-    match (range, base_branch) {
-        (Some(r), None) => {
-            if let Some((base, head)) = r.split_once("..") {
-                // Explicit range: base..head
-                Ok(CommitRange {
-                    base: git.resolve_ref(base)?,
-                    head: git.resolve_ref(head)?,
-                })
-            } else {
-                // Single ref: treat as base..HEAD
-                Ok(CommitRange {
-                    base: git.resolve_ref(r)?,
-                    head: git.get_head()?,
-                })
-            }
-        }
-        (None, Some(branch)) => Ok(CommitRange {
-            base: git.resolve_ref(branch)?,
-            head: git.get_head()?,
-        }),
-        (None, None) => Ok(CommitRange {
-            base: git.find_branch_base()?,
-            head: git.get_head()?,
-        }),
-        (Some(_), Some(_)) => Err(GitError::CommandFailed(
-            "Cannot specify both range and --base".to_string(),
-        )),
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error(transparent)]
@@ -173,6 +133,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             Command::Status => self.handle_status(),
             Command::Assess(opts) => self.handle_assess(opts),
             Command::Compare(opts) => self.handle_compare(opts),
+            Command::Reword(opts) => self.handle_reword(opts),
         }
     }
 
@@ -319,21 +280,21 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             );
         }
 
-        let range = resolve_range(&self.git, opts.range.as_deref(), opts.base.as_deref())?;
+        let range = CommitRange::resolve(opts.range.as_ref(), opts.base.as_deref(), &self.git)?;
         info!(
             "Planning {}..{}",
             short_sha(&range.base),
-            short_sha(&range.head)
+            short_sha(range.head())
         );
 
         let planner = Planner::new(&self.git, self.strategies.clone());
-        let source_commits = planner.read_source_commits(&range.base, &range.head)?;
+        let source_commits = planner.read_source_commits(&range.base, range.head())?;
         info!("Found {} commits", source_commits.len());
 
         let file_to_commits = planner.build_file_to_commits_map(&source_commits)?;
 
         // Get the diff between base and head (doesn't modify working tree)
-        let diff_output = self.git.diff_trees(&range.base, &range.head)?;
+        let diff_output = self.git.diff_trees(&range.base, range.head())?;
         let (hunks, file_changes) =
             planner.parse_diff_full_with_commit_mapping(&diff_output, &file_to_commits)?;
         info!("Parsed {} hunks", hunks.len());
@@ -369,7 +330,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             let saved_plan = SavedPlan::new(
                 plan.strategy,
                 range.base.clone(),
-                range.head.clone(),
+                range.head().to_string(),
                 &plan.planned_commits,
                 &plan.hunks,
                 &plan.file_to_commits,
@@ -528,16 +489,16 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
 
     fn handle_assess(&mut self, opts: AssessArgs) -> Result<(), AppError> {
         // Resolve commit range
-        let range = resolve_range(&self.git, opts.range.as_deref(), opts.base.as_deref())?;
+        let range = CommitRange::resolve(opts.range.as_ref(), opts.base.as_deref(), &self.git)?;
 
         info!(
             "Assessing commits {}..{}",
             short_sha(&range.base),
-            short_sha(&range.head)
+            short_sha(range.head())
         );
 
         // Read commits
-        let commits = self.git.read_commits(&range.base, &range.head)?;
+        let commits = self.git.read_commits(&range.base, range.head())?;
         if commits.is_empty() {
             return Err(AppError::User("No commits found in range".to_string()));
         }
@@ -562,7 +523,7 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let engine = AssessmentEngine::new(client, &criterion_ids).with_parallelism(opts.parallel);
 
         // Run assessment
-        let result = engine.assess_range(&self.git, &range.base, &range.head, &commits)?;
+        let result = engine.assess_range(&self.git, &range.base, range.head(), &commits)?;
 
         // Handle comparison if requested
         if let Some(compare_path) = &opts.compare {
@@ -604,6 +565,135 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let output =
             assessment::report::format_comparison(&comparison, convert_format(opts.format));
         println!("{}", output);
+
+        Ok(())
+    }
+
+    fn handle_reword(&mut self, opts: RewordArgs) -> Result<(), AppError> {
+        use crate::reorganize::llm::{build_reword_prompt, FixMessageResponse};
+        use crate::utils::extract_json_str;
+
+        // Use MessageQuality if no criteria specified
+        let criteria = if opts.criteria.is_empty() {
+            vec![CriterionId::MessageQuality]
+        } else {
+            opts.criteria.clone()
+        };
+
+        info!(
+            "Rewording commits in range: {:?} (criteria: {:?})",
+            opts.range, criteria
+        );
+
+        if opts.dry_run {
+            info!("Dry run mode - no changes will be made");
+        }
+
+        // Resolve the range (handles single refs by getting parent as base)
+        let range = opts.range.resolve_single_or_range(&self.git)?;
+
+        // Read commits in range
+        let commits = self.git.read_commits(&range.base, range.head())?;
+        if commits.is_empty() {
+            return Err(AppError::User("No commits found in range".to_string()));
+        }
+
+        info!("Found {} commits to analyze", commits.len());
+
+        // Create assessment engine
+        let client = self.llm_config.create_client();
+        let engine = AssessmentEngine::new(client.clone(), &criteria);
+
+        // Assess commits
+        let assessment_result =
+            engine.assess_range(&self.git, &range.base, range.head(), &commits)?;
+
+        // Track proposed rewrites
+        let mut rewrites: Vec<(String, String, String, String)> = Vec::new(); // (sha, old_short, new_short, new_long)
+
+        // For each commit assessment, generate improved message
+        for (commit, ca) in commits.iter().zip(assessment_result.commit_assessments.iter()) {
+            info!(
+                "  {} {}: {:.1}%",
+                short_sha(&commit.sha),
+                commit.message.short,
+                ca.overall_score * 100.0
+            );
+
+            // Get diff for context
+            let diff_content = self
+                .git
+                .read_hunks(&commit.sha, 0)
+                .map(|hunks| {
+                    hunks
+                        .iter()
+                        .map(|h| h.to_patch())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+
+            // Build prompt and get improved message
+            let prompt = build_reword_prompt(commit, ca, &diff_content);
+
+            match client.complete(&prompt) {
+                Ok(response) => {
+                    if let Some(json_str) = extract_json_str(&response) {
+                        if let Ok(fix) = serde_json::from_str::<FixMessageResponse>(json_str) {
+                            rewrites.push((
+                                commit.sha.clone(),
+                                commit.message.short.clone(),
+                                fix.description.short.clone(),
+                                fix.description.long.clone(),
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to reword commit {}: {}", short_sha(&commit.sha), e);
+                }
+            }
+        }
+
+        // Show proposed rewrites
+        if rewrites.is_empty() {
+            info!("No rewrites proposed");
+            return Ok(());
+        }
+
+        info!("\n=== Proposed Rewrites ===\n");
+        for (sha, old_short, new_short, new_long) in &rewrites {
+            info!("Commit {}", short_sha(sha));
+            info!("  Before: {}", old_short);
+            info!("  After:  {}", new_short);
+            if !new_long.is_empty() {
+                let indented: String = new_long
+                    .lines()
+                    .map(|line| format!("    {}", line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                info!("  Body:\n{}", indented);
+            }
+            info!("");
+        }
+
+        if opts.dry_run {
+            info!("Dry run complete. To apply, run without --dry-run");
+            info!(
+                "Note: Rewriting commits requires an interactive rebase.\n\
+                   You can manually apply these changes with:\n\
+                   git rebase -i {}",
+                short_sha(&range.base)
+            );
+        } else {
+            // For now, just show the instructions - actual git rebase is complex
+            info!(
+                "To apply these changes, run:\n\
+                   git rebase -i {}\n\n\
+                   Then change 'pick' to 'reword' for each commit you want to update.",
+                short_sha(&range.base)
+            );
+        }
 
         Ok(())
     }

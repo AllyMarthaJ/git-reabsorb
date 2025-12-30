@@ -10,7 +10,6 @@ use crate::assessment::types::AssessmentLevel;
 pub fn definition() -> CriterionDefinition {
     CriterionDefinition {
         id: CriterionId::MessageQuality,
-        name: "Message Quality".to_string(),
         description: "Measures how well the commit message describes the motivation behind \
             the change, why it was required, and what implications it has. Good commit \
             messages explain the 'why', not just the 'what'."

@@ -45,7 +45,7 @@ pub fn parse_criterion_response(
     let weight = definition.weight_for_level(parsed.level);
 
     Ok(CriterionScore {
-        criterion_id: definition.id.to_string(),
+        criterion_id: definition.id,
         level: parsed.level,
         weighted_score: parsed.level as f32 * weight,
         rationale: parsed.rationale,
@@ -57,7 +57,7 @@ pub fn parse_criterion_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assessment::criteria::atomicity;
+    use crate::assessment::criteria::{atomicity, CriterionId};
 
     #[test]
     fn parses_valid_response() {
@@ -68,7 +68,7 @@ mod tests {
 
         assert_eq!(score.level, 4);
         assert_eq!(score.weighted_score, 4.0);
-        assert_eq!(score.criterion_id, "atomicity");
+        assert_eq!(score.criterion_id, CriterionId::Atomicity);
     }
 
     #[test]

@@ -102,3 +102,10 @@ pub struct FixOverlappingResponse {
     /// The commit index that should contain both overlapping hunks
     pub chosen_commit_index: usize,
 }
+
+/// Response for fixing a commit message based on assessment feedback
+#[derive(Debug, Clone, Deserialize)]
+pub struct FixMessageResponse {
+    /// The improved commit description
+    pub description: crate::models::CommitDescription,
+}

@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::assessment::types::CommitAssessment;
 use crate::models::{Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
 
 /// Issues that can occur in a reorganization plan
@@ -59,6 +60,12 @@ pub enum ValidationIssue {
         commit_a: PlannedCommitId,
         hunk_b: HunkId,
         commit_b: PlannedCommitId,
+    },
+
+    /// A commit failed quality assessment
+    FailedAssessment {
+        commit_id: PlannedCommitId,
+        assessment: CommitAssessment,
     },
 }
 
@@ -128,6 +135,17 @@ impl std::fmt::Display for ValidationIssue {
                     commit_b
                 )
             }
+            Self::FailedAssessment {
+                commit_id,
+                assessment,
+            } => {
+                write!(
+                    f,
+                    "{}: failed quality assessment (score: {:.1}%)",
+                    commit_id,
+                    assessment.overall_score * 100.0
+                )
+            }
         }
     }
 }
@@ -143,7 +161,7 @@ impl ValidationResult {
         self.issues.is_empty()
     }
 
-    /// Check if there are any fixable issues (unassigned hunks, duplicates, overlapping)
+    /// Check if there are any fixable issues (unassigned hunks, duplicates, overlapping, failed assessments)
     pub fn has_fixable_issues(&self) -> bool {
         self.issues.iter().any(|issue| {
             matches!(
@@ -152,6 +170,7 @@ impl ValidationResult {
                     | ValidationIssue::DuplicateHunkAcrossCommits { .. }
                     | ValidationIssue::DuplicateHunkInCommit { .. }
                     | ValidationIssue::OverlappingHunks { .. }
+                    | ValidationIssue::FailedAssessment { .. }
             )
         })
     }
@@ -209,6 +228,14 @@ impl ValidationResult {
                     None
                 }
             })
+            .collect()
+    }
+
+    /// Get failed assessment issues
+    pub fn failed_assessments(&self) -> Vec<&ValidationIssue> {
+        self.issues
+            .iter()
+            .filter(|issue| matches!(issue, ValidationIssue::FailedAssessment { .. }))
             .collect()
     }
 }

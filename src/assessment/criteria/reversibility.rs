@@ -10,7 +10,6 @@ use crate::assessment::types::AssessmentLevel;
 pub fn definition() -> CriterionDefinition {
     CriterionDefinition {
         id: CriterionId::Reversibility,
-        name: "Reversibility".to_string(),
         description: "Measures how easily the commit could be reverted if needed. \
             Good commits are isolated enough that reverting them doesn't cascade \
             into other changes or require manual conflict resolution."

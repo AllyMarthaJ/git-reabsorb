@@ -1,6 +1,6 @@
 //! Report formatting for assessment output.
 
-use crate::assessment::criteria::{get_definition, CriterionId};
+use crate::assessment::criteria::get_definition;
 use crate::assessment::types::{AssessmentComparison, CommitAssessment, RangeAssessment};
 
 /// Output format for assessment reports.
@@ -56,12 +56,12 @@ fn format_pretty(assessment: &RangeAssessment, verbose: bool) -> String {
     // Aggregate scores
     output.push_str("Aggregate Scores:\n");
     let mut sorted_aggs: Vec<_> = assessment.aggregate_scores.values().collect();
-    sorted_aggs.sort_by(|a, b| a.criterion_name.cmp(&b.criterion_name));
+    sorted_aggs.sort_by(|a, b| a.criterion_id.name().cmp(b.criterion_id.name()));
 
     for agg in sorted_aggs {
         output.push_str(&format!(
             "  {}: {:.1} (min: {:.0}, max: {:.0}, std: {:.2})\n",
-            agg.criterion_name, agg.mean_score, agg.min_score, agg.max_score, agg.std_deviation
+            agg.criterion_id.name(), agg.mean_score, agg.min_score, agg.max_score, agg.std_deviation
         ));
     }
     output.push('\n');
@@ -103,12 +103,8 @@ fn format_criterion_rubric(
     let mut output = String::new();
 
     // Get the criterion definition to access level descriptions
-    let criterion_id = parse_criterion_id(&score.criterion_id);
-    let definition = criterion_id.map(get_definition);
-
-    let name = criterion_id
-        .map(|id| id.name())
-        .unwrap_or(&score.criterion_id);
+    let definition = get_definition(score.criterion_id);
+    let name = score.criterion_id.name();
 
     // Column width for level descriptions
     let col_width = 24;
@@ -154,47 +150,28 @@ fn format_criterion_rubric(
     output.push_str("┤\n");
 
     // Level descriptions - wrap text into multiple rows if needed
-    if let Some(def) = &definition {
-        let wrapped: Vec<Vec<String>> = def
-            .levels
-            .iter()
-            .map(|level| wrap_text(&level.description, col_width - 2))
-            .collect();
+    let wrapped: Vec<Vec<String>> = definition
+        .levels
+        .iter()
+        .map(|level| wrap_text(&level.description, col_width - 2))
+        .collect();
 
-        let max_lines = wrapped.iter().map(|w| w.len()).max().unwrap_or(1);
+    let max_lines = wrapped.iter().map(|w| w.len()).max().unwrap_or(1);
 
-        for line_idx in 0..max_lines {
-            output.push('│');
-            for (col, lines) in wrapped.iter().enumerate() {
-                let is_hit = (col + 1) as u8 == score.level;
-                let text = lines.get(line_idx).map(|s| s.as_str()).unwrap_or("");
-
-                if is_hit {
-                    output.push_str(&format!(
-                        "\x1b[42;30m {:^width$} \x1b[0m",
-                        text,
-                        width = col_width - 2
-                    ));
-                } else {
-                    output.push_str(&format!(" {:^width$} ", text, width = col_width - 2));
-                }
-                output.push('│');
-            }
-            output.push('\n');
-        }
-    } else {
-        // Fallback if definition not found
+    for line_idx in 0..max_lines {
         output.push('│');
-        for i in 1..=5 {
-            let is_hit = i == score.level;
+        for (col, lines) in wrapped.iter().enumerate() {
+            let is_hit = (col + 1) as u8 == score.level;
+            let text = lines.get(line_idx).map(|s| s.as_str()).unwrap_or("");
+
             if is_hit {
                 output.push_str(&format!(
-                    "\x1b[42;30m{:^width$}\x1b[0m",
-                    "●",
-                    width = col_width
+                    "\x1b[42;30m {:^width$} \x1b[0m",
+                    text,
+                    width = col_width - 2
                 ));
             } else {
-                output.push_str(&format!("{:^width$}", "○", width = col_width));
+                output.push_str(&format!(" {:^width$} ", text, width = col_width - 2));
             }
             output.push('│');
         }
@@ -229,11 +206,6 @@ fn format_criterion_rubric(
     }
 
     output
-}
-
-/// Parse criterion ID from string
-fn parse_criterion_id(id: &str) -> Option<CriterionId> {
-    id.parse().ok()
 }
 
 /// Wrap text to fit within a given width
@@ -287,12 +259,12 @@ fn format_markdown(assessment: &RangeAssessment, verbose: bool) -> String {
     output.push_str("## Summary\n\n| Criterion | Mean | Min | Max | Std Dev |\n|-----------|------|-----|-----|--------|\n");
 
     let mut sorted_aggs: Vec<_> = assessment.aggregate_scores.values().collect();
-    sorted_aggs.sort_by(|a, b| a.criterion_name.cmp(&b.criterion_name));
+    sorted_aggs.sort_by(|a, b| a.criterion_id.name().cmp(b.criterion_id.name()));
 
     for agg in sorted_aggs {
         output.push_str(&format!(
             "| {} | {:.1} | {:.0} | {:.0} | {:.2} |\n",
-            agg.criterion_name, agg.mean_score, agg.min_score, agg.max_score, agg.std_deviation
+            agg.criterion_id.name(), agg.mean_score, agg.min_score, agg.max_score, agg.std_deviation
         ));
     }
     output.push('\n');
@@ -340,7 +312,10 @@ fn format_compact(assessment: &RangeAssessment) -> String {
         let scores: Vec<String> = commit
             .criterion_scores
             .iter()
-            .map(|s| format!("{}:{}", &s.criterion_id[..3], s.level))
+            .map(|s| {
+                let id_str = s.criterion_id.to_string();
+                format!("{}:{}", &id_str[..3.min(id_str.len())], s.level)
+            })
             .collect();
         output.push_str(&format!(
             "{} {:.0}% [{}] {}\n",
@@ -445,6 +420,7 @@ fn format_comparison_compact(comparison: &AssessmentComparison) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assessment::criteria::CriterionId;
     use crate::assessment::types::{CriterionScore, RangeAssessment};
     use std::collections::HashMap;
 
@@ -457,7 +433,7 @@ mod tests {
                 commit_sha: "abc12345".to_string(),
                 commit_message: "Test commit".to_string(),
                 criterion_scores: vec![CriterionScore {
-                    criterion_id: "atomicity".to_string(),
+                    criterion_id: CriterionId::Atomicity,
                     level: 4,
                     weighted_score: 4.0,
                     rationale: "Good".to_string(),

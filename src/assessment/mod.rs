@@ -203,7 +203,7 @@ impl AssessmentEngine {
     fn calculate_aggregates(
         &self,
         assessments: &[CommitAssessment],
-    ) -> HashMap<String, AggregateScore> {
+    ) -> HashMap<CriterionId, AggregateScore> {
         let mut aggregates = HashMap::new();
 
         for criterion_id in &self.criterion_ids {
@@ -213,7 +213,7 @@ impl AssessmentEngine {
                 .filter_map(|ca| {
                     ca.criterion_scores
                         .iter()
-                        .find(|s| s.criterion_id == def.id.to_string())
+                        .find(|s| s.criterion_id == def.id)
                         .map(|s| s.level as f32)
                 })
                 .collect();
@@ -229,10 +229,9 @@ impl AssessmentEngine {
                 scores.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / scores.len() as f32;
 
             aggregates.insert(
-                def.id.to_string(),
+                def.id,
                 AggregateScore {
-                    criterion_id: def.id.to_string(),
-                    criterion_name: def.name.clone(),
+                    criterion_id: def.id,
                     mean_score: mean,
                     min_score: min,
                     max_score: max,

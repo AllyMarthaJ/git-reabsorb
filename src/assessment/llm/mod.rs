@@ -134,6 +134,6 @@ mod tests {
         let score = assessor.assess(&commit, "+code", &context).unwrap();
 
         assert_eq!(score.level, 4);
-        assert_eq!(score.criterion_id, "atomicity");
+        assert_eq!(score.criterion_id, CriterionId::Atomicity);
     }
 }

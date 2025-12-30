@@ -77,7 +77,6 @@ impl std::str::FromStr for CriterionId {
 #[derive(Debug, Clone)]
 pub struct CriterionDefinition {
     pub id: CriterionId,
-    pub name: String,
     pub description: String,
     /// The 5 levels, sorted from 1 (worst) to 5 (best).
     pub levels: [AssessmentLevel; 5],

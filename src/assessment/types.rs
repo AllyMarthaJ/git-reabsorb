@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::assessment::criteria::CriterionId;
+
 /// A single level within a criterion's rubric (1-5 scale).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssessmentLevel {
@@ -36,7 +38,7 @@ impl AssessmentLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CriterionScore {
     /// The criterion that was assessed.
-    pub criterion_id: String,
+    pub criterion_id: CriterionId,
     /// The level achieved (1-5).
     pub level: u8,
     /// Weighted score (level * weight).
@@ -69,8 +71,7 @@ pub struct CommitAssessment {
 /// Aggregate statistics for a criterion across the range.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateScore {
-    pub criterion_id: String,
-    pub criterion_name: String,
+    pub criterion_id: CriterionId,
     pub mean_score: f32,
     pub min_score: f32,
     pub max_score: f32,
@@ -89,7 +90,7 @@ pub struct RangeAssessment {
     /// Individual commit assessments.
     pub commit_assessments: Vec<CommitAssessment>,
     /// Aggregate scores by criterion.
-    pub aggregate_scores: HashMap<String, AggregateScore>,
+    pub aggregate_scores: HashMap<CriterionId, AggregateScore>,
     /// Overall range score (0.0 to 1.0).
     pub overall_score: f32,
     /// Range-level observations.
@@ -104,7 +105,7 @@ pub struct AssessmentComparison {
     /// Change in overall score.
     pub overall_delta: f32,
     /// Per-criterion deltas (positive = improvement).
-    pub criterion_deltas: HashMap<String, f32>,
+    pub criterion_deltas: HashMap<CriterionId, f32>,
     /// Summary of improvements.
     pub improvements: Vec<String>,
     /// Summary of regressions.
@@ -130,7 +131,7 @@ mod tests {
     #[test]
     fn criterion_score_serialization() {
         let score = CriterionScore {
-            criterion_id: "atomicity".to_string(),
+            criterion_id: CriterionId::Atomicity,
             level: 4,
             weighted_score: 4.0,
             rationale: "Single logical change".to_string(),
@@ -141,5 +142,6 @@ mod tests {
         let json = serde_json::to_string(&score).unwrap();
         let restored: CriterionScore = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.level, 4);
+        assert_eq!(restored.criterion_id, CriterionId::Atomicity);
     }
 }
