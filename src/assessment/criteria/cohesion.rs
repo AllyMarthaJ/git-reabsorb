@@ -7,7 +7,6 @@ use crate::assessment::types::AssessmentLevel;
 pub fn definition() -> CriterionDefinition {
     CriterionDefinition {
         id: CriterionId::LogicalCohesion,
-        name: "Logical Cohesion".to_string(),
         description: "Measures whether all changes in the commit belong together semantically. \
             High cohesion means every change serves the same logical purpose and a reviewer \
             would naturally expect these changes together."

@@ -10,7 +10,6 @@ use crate::assessment::types::AssessmentLevel;
 pub fn definition() -> CriterionDefinition {
     CriterionDefinition {
         id: CriterionId::ScopeAppropriateness,
-        name: "Scope Appropriateness".to_string(),
         description: "Measures whether the commit's size and scope are appropriate for \
             effective code review and understanding. Too large commits are hard to review; \
             too small commits add noise to history."

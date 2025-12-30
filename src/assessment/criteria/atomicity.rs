@@ -7,7 +7,6 @@ use crate::assessment::types::AssessmentLevel;
 pub fn definition() -> CriterionDefinition {
     CriterionDefinition {
         id: CriterionId::Atomicity,
-        name: "Atomicity".to_string(),
         description: "Measures whether a commit represents a single, indivisible logical change. \
             An atomic commit can be understood, reviewed, and reverted as a single unit."
             .to_string(),

@@ -12,7 +12,8 @@ mod parser;
 mod prompt;
 mod types;
 
-pub use types::ChangeSpec;
+pub use prompt::build_reword_prompt;
+pub use types::{ChangeSpec, FixMessageResponse};
 
 use log::{debug, info};
 
@@ -24,7 +25,7 @@ use crate::models::{
 };
 use crate::reorganize::{ReorganizeError, Reorganizer};
 use crate::utils::extract_json_str;
-use crate::validation::ValidationResult;
+use crate::validation::{ValidationIssue, ValidationResult};
 
 use types::{FixDuplicateResponse, FixOverlappingResponse, FixUnassignedResponse, HunkAssignment};
 
@@ -345,6 +346,44 @@ impl Reorganizer for LlmReorganizer {
                     }
                     Err(e) => {
                         debug!("  LLM fix failed for unassigned hunks: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Fix failed assessment issues (rewrite commit messages)
+        for issue in validation.failed_assessments() {
+            if let ValidationIssue::FailedAssessment {
+                commit_id,
+                assessment,
+            } = issue
+            {
+                debug!(
+                    "Fixing failed assessment for commit {} (score: {:.1}%)",
+                    commit_id,
+                    assessment.overall_score * 100.0
+                );
+
+                // Find the commit to fix
+                if let Some(commit) = commits.iter_mut().find(|c| c.id == *commit_id) {
+                    let fix_prompt = prompt::build_fix_message_prompt(commit, assessment, hunks);
+
+                    match self.client.complete(&fix_prompt) {
+                        Ok(response) => {
+                            if let Some(json_str) = extract_json_str(&response) {
+                                if let Ok(fix) = serde_json::from_str::<FixMessageResponse>(json_str)
+                                {
+                                    debug!(
+                                        "  Rewrote commit message: '{}' -> '{}'",
+                                        commit.description.short, fix.description.short
+                                    );
+                                    commit.description = fix.description;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("  LLM fix failed for commit {}: {}", commit_id, e);
+                        }
                     }
                 }
             }
