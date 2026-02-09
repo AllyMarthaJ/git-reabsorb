@@ -23,7 +23,9 @@ pub fn build_assessment_prompt(
 ## Rubric
 
 "#,
-        definition.id.name(), definition.id.name(), definition.description
+        definition.id.name(),
+        definition.id.name(),
+        definition.description
     ));
 
     // Add rubric levels

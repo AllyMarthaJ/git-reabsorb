@@ -10,7 +10,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit, PlannedCommitId, Strategy};
+use crate::models::{
+    CommitDescription, FileChange, Hunk, PlannedChange, PlannedCommit, PlannedCommitId, Strategy,
+};
 
 const REABSORB_DIR: &str = ".git/reabsorb";
 const PLAN_FILE: &str = "plan.json";
@@ -79,7 +81,13 @@ impl SavedPlan {
         self.commits
             .iter()
             .enumerate()
-            .map(|(idx, sc)| PlannedCommit::new(PlannedCommitId(idx), sc.description.clone(), sc.changes.clone()))
+            .map(|(idx, sc)| {
+                PlannedCommit::new(
+                    PlannedCommitId(idx),
+                    sc.description.clone(),
+                    sc.changes.clone(),
+                )
+            })
             .collect()
     }
 

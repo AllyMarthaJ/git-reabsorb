@@ -364,8 +364,14 @@ mod tests {
     fn make_commit(id: usize, hunk_ids: Vec<usize>, depends_on: Vec<usize>) -> PlannedCommit {
         PlannedCommit::with_dependencies(
             PlannedCommitId(id),
-            CommitDescription::new(format!("Commit {}", id), format!("Long message for commit {}", id)),
-            hunk_ids.into_iter().map(|h| PlannedChange::ExistingHunk(HunkId(h))).collect(),
+            CommitDescription::new(
+                format!("Commit {}", id),
+                format!("Long message for commit {}", id),
+            ),
+            hunk_ids
+                .into_iter()
+                .map(|h| PlannedChange::ExistingHunk(HunkId(h)))
+                .collect(),
             depends_on.into_iter().map(PlannedCommitId).collect(),
         )
     }

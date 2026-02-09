@@ -6,7 +6,9 @@ use std::thread;
 use log::debug;
 
 use crate::llm::LlmClient;
-use crate::models::{CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
+use crate::models::{
+    CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId,
+};
 
 use super::types::{AnalysisResults, Cluster, CommitPlanResponse, HierarchicalError};
 

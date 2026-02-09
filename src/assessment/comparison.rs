@@ -83,10 +83,7 @@ pub fn compare_assessments(
     let mut criterion_deltas = HashMap::new();
     for (criterion_id, after_agg) in &after.aggregate_scores {
         if let Some(before_agg) = before.aggregate_scores.get(criterion_id) {
-            criterion_deltas.insert(
-                criterion_id.clone(),
-                after_agg.mean_score - before_agg.mean_score,
-            );
+            criterion_deltas.insert(*criterion_id, after_agg.mean_score - before_agg.mean_score);
         }
     }
 

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::models::{CommitDescription, Hunk, HunkId, PlannedCommit, PlannedCommitId, SourceCommit};
+use crate::models::{
+    CommitDescription, Hunk, HunkId, PlannedCommit, PlannedCommitId, SourceCommit,
+};
 use crate::reorganize::{ReorganizeError, Reorganizer};
 
 /// Groups hunks by file path.

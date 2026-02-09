@@ -45,9 +45,9 @@ use log::{debug, info};
 
 use crate::features::Feature;
 use crate::llm::LlmClient;
-use crate::validation::{apply_deterministic_fixes, ValidationResult};
 use crate::models::{Hunk, PlannedCommit, SourceCommit};
 use crate::reorganize::{ReorganizeError, Reorganizer};
+use crate::validation::{apply_deterministic_fixes, ValidationResult};
 
 /// Configuration for the hierarchical reorganizer
 #[derive(Debug, Clone)]

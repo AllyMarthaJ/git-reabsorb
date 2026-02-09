@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::llm::LlmClient;
-use crate::models::{CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
+use crate::models::{
+    CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId,
+};
 
 use super::types::{AnalysisResults, HierarchicalError};
 
@@ -85,7 +87,9 @@ impl Validator {
             issues.push(ValidationIssue::EmptyMessage);
         }
         if commit.description.short.len() > self.max_message_length {
-            issues.push(ValidationIssue::MessageTooLong(commit.description.short.len()));
+            issues.push(ValidationIssue::MessageTooLong(
+                commit.description.short.len(),
+            ));
         }
 
         // Check changes
@@ -190,7 +194,8 @@ impl Validator {
                         .take(self.max_message_length - 3)
                         .collect::<String>()
                         + "...";
-                    commit.description = CommitDescription::new(truncated, commit.description.long.clone());
+                    commit.description =
+                        CommitDescription::new(truncated, commit.description.long.clone());
                 }
                 ValidationIssue::NoChanges => {
                     // Can't repair - this commit should be removed
@@ -200,7 +205,9 @@ impl Validator {
                 }
                 ValidationIssue::InvalidHunk(hunk_id) => {
                     // Remove invalid hunk reference
-                    commit.changes.retain(|c| !matches!(c, PlannedChange::ExistingHunk(id) if *id == *hunk_id));
+                    commit.changes.retain(
+                        |c| !matches!(c, PlannedChange::ExistingHunk(id) if *id == *hunk_id),
+                    );
                 }
                 ValidationIssue::DuplicateHunk(hunk_id) => {
                     // Remove duplicates, keep first occurrence
@@ -301,7 +308,10 @@ fn build_repair_prompt(
 ) -> String {
     let mut prompt = String::from("Write a better commit message for these changes:\n\n");
 
-    prompt.push_str(&format!("Current message: {}\n\n", commit.description.short));
+    prompt.push_str(&format!(
+        "Current message: {}\n\n",
+        commit.description.short
+    ));
 
     prompt.push_str("Changes:\n");
     for hunk_id in extract_hunk_ids(&commit.changes) {
@@ -352,11 +362,9 @@ pub fn deduplicate_across_commits(mut commits: Vec<PlannedCommit>) -> Vec<Planne
     let mut seen: HashSet<HunkId> = HashSet::new();
 
     for commit in &mut commits {
-        commit.changes.retain(|c| {
-            match c {
-                PlannedChange::ExistingHunk(id) => seen.insert(*id),
-                PlannedChange::NewHunk(h) => seen.insert(h.id),
-            }
+        commit.changes.retain(|c| match c {
+            PlannedChange::ExistingHunk(id) => seen.insert(*id),
+            PlannedChange::NewHunk(h) => seen.insert(h.id),
         });
     }
 
@@ -420,7 +428,10 @@ pub fn assign_orphans(
                 "Additional changes".to_string(),
                 "Miscellaneous changes that didn't fit elsewhere".to_string(),
             ),
-            remaining_orphans.into_iter().map(PlannedChange::ExistingHunk).collect(),
+            remaining_orphans
+                .into_iter()
+                .map(PlannedChange::ExistingHunk)
+                .collect(),
         ));
     }
 
@@ -437,7 +448,10 @@ mod tests {
         PlannedCommit::new(
             PlannedCommitId(id),
             CommitDescription::new(message.to_string(), message.to_string()),
-            hunk_ids.into_iter().map(|h| PlannedChange::ExistingHunk(HunkId(h))).collect(),
+            hunk_ids
+                .into_iter()
+                .map(|h| PlannedChange::ExistingHunk(HunkId(h)))
+                .collect(),
         )
     }
 

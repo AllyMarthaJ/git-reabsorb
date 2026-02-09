@@ -125,8 +125,7 @@ fn test_llm_reorganizer_simple_commits() {
         .diff_trees(&base, "HEAD")
         .expect("Failed to get diff");
 
-    let parsed =
-        git_reabsorb::patch::parse(&diff, &[], 0).expect("Failed to parse diff");
+    let parsed = git_reabsorb::patch::parse(&diff, &[], 0).expect("Failed to parse diff");
 
     assert!(!parsed.hunks.is_empty(), "Should have hunks to reorganize");
 
@@ -213,8 +212,7 @@ fn test_llm_reorganizer_multiple_commits() {
         .diff_trees(&base, "HEAD")
         .expect("Failed to get diff");
 
-    let parsed =
-        git_reabsorb::patch::parse(&diff, &[], 0).expect("Failed to parse diff");
+    let parsed = git_reabsorb::patch::parse(&diff, &[], 0).expect("Failed to parse diff");
 
     // Create LLM reorganizer
     let client = Box::new(ClaudeCliClient::new());

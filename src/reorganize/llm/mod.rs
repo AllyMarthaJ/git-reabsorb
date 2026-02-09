@@ -62,10 +62,7 @@ impl LlmReorganizer {
             let hunks_content = prompt::build_hunks_file_content(&context);
             session.write_input(&hunks_content)?;
 
-            debug!(
-                "File-based LLM I/O: input={}",
-                session.input_path.display()
-            );
+            debug!("File-based LLM I/O: input={}", session.input_path.display());
 
             // Build prompt that references the input file
             let prompt = prompt::build_file_based_prompt(&context, &session.input_path);
@@ -210,7 +207,10 @@ impl Reorganizer for LlmReorganizer {
 
         // Fix duplicate hunks using LLM
         for (hunk_id, commit_ids) in validation.duplicate_hunks() {
-            debug!("Fixing duplicate hunk {} across {:?}", hunk_id.0, commit_ids);
+            debug!(
+                "Fixing duplicate hunk {} across {:?}",
+                hunk_id.0, commit_ids
+            );
 
             // Convert commit_ids to indices
             let commit_indices: Vec<usize> = commit_ids
@@ -222,12 +222,8 @@ impl Reorganizer for LlmReorganizer {
                 continue; // Not actually a cross-commit duplicate
             }
 
-            let fix_prompt = prompt::build_fix_duplicate_prompt(
-                &context,
-                &commits,
-                hunk_id.0,
-                &commit_indices,
-            );
+            let fix_prompt =
+                prompt::build_fix_duplicate_prompt(&context, &commits, hunk_id.0, &commit_indices);
 
             match self.client.complete(&fix_prompt) {
                 Ok(response) => {
@@ -241,7 +237,10 @@ impl Reorganizer for LlmReorganizer {
                                     });
                                 }
                             }
-                            debug!("  Kept hunk {} in commit index {}", hunk_id.0, fix.chosen_commit_index);
+                            debug!(
+                                "  Kept hunk {} in commit index {}",
+                                hunk_id.0, fix.chosen_commit_index
+                            );
                         }
                     }
                 }
@@ -307,15 +306,19 @@ impl Reorganizer for LlmReorganizer {
                                         matches!(c, PlannedChange::ExistingHunk(id) if *id == move_hunk)
                                     });
                                 if !already_has {
-                                    commit
-                                        .changes
-                                        .push(PlannedChange::ExistingHunk(move_hunk));
+                                    commit.changes.push(PlannedChange::ExistingHunk(move_hunk));
                                 }
                             }
 
                             debug!(
                                 "  Moved hunk {} to commit index {} (with hunk {})",
-                                move_hunk.0, keep_idx, if move_hunk == hunk_b { hunk_a.0 } else { hunk_b.0 }
+                                move_hunk.0,
+                                keep_idx,
+                                if move_hunk == hunk_b {
+                                    hunk_a.0
+                                } else {
+                                    hunk_b.0
+                                }
                             );
                         }
                     }
@@ -336,16 +339,14 @@ impl Reorganizer for LlmReorganizer {
 
                 let unassigned_ids: Vec<usize> = unassigned.iter().map(|h| h.0).collect();
 
-                let fix_prompt = prompt::build_fix_unassigned_prompt(
-                    &context,
-                    &commits,
-                    &unassigned_ids,
-                );
+                let fix_prompt =
+                    prompt::build_fix_unassigned_prompt(&context, &commits, &unassigned_ids);
 
                 match self.client.complete(&fix_prompt) {
                     Ok(response) => {
                         if let Some(json_str) = extract_json_str(&response) {
-                            if let Ok(fix) = serde_json::from_str::<FixUnassignedResponse>(json_str) {
+                            if let Ok(fix) = serde_json::from_str::<FixUnassignedResponse>(json_str)
+                            {
                                 self.apply_unassigned_fix_to_commits(&mut commits, fix);
                             }
                         }
@@ -377,7 +378,8 @@ impl Reorganizer for LlmReorganizer {
                     match self.client.complete(&fix_prompt) {
                         Ok(response) => {
                             if let Some(json_str) = extract_json_str(&response) {
-                                if let Ok(fix) = serde_json::from_str::<FixMessageResponse>(json_str)
+                                if let Ok(fix) =
+                                    serde_json::from_str::<FixMessageResponse>(json_str)
                                 {
                                     debug!(
                                         "  Rewrote commit message: '{}' -> '{}'",
