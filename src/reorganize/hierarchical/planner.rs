@@ -165,9 +165,8 @@ fn plan_single_cluster(
         };
 
         // Successfully parsed - return the result
-        if plan.should_split && plan.split_groups.is_some() {
+        if let (true, Some(groups)) = (plan.should_split, plan.split_groups) {
             // Split into multiple commits
-            let groups = plan.split_groups.unwrap();
             return Ok(groups
                 .into_iter()
                 .enumerate()
