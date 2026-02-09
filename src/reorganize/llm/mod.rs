@@ -15,13 +15,12 @@ mod types;
 pub use prompt::build_reword_prompt;
 pub use types::{ChangeSpec, FixMessageResponse};
 
-use log::{debug, info};
+use log::{debug, info, warn};
 
 use crate::features::Feature;
 use crate::llm::{LlmClient, LlmError};
 use crate::models::{
-    CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId,
-    SourceCommit,
+    CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId, SourceCommit,
 };
 use crate::reorganize::{ReorganizeError, Reorganizer};
 use crate::utils::extract_json_str;
@@ -142,10 +141,17 @@ impl LlmReorganizer {
                         .iter_mut()
                         .find(|c| c.description.short == commit_description)
                     {
-                        commit.changes.push(PlannedChange::ExistingHunk(HunkId(hunk_id)));
+                        commit
+                            .changes
+                            .push(PlannedChange::ExistingHunk(HunkId(hunk_id)));
                         debug!(
                             "  Added hunk {} to commit '{}'",
                             hunk_id, commit_description
+                        );
+                    } else {
+                        warn!(
+                            "  Could not find commit '{}' for hunk {}; hunk remains unassigned",
+                            commit_description, hunk_id
                         );
                     }
                 }
