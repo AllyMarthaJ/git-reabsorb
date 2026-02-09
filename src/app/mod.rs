@@ -8,12 +8,12 @@ use crate::cancel;
 use crate::cli::{
     ApplyArgs, AssessArgs, Command, CommitRange, CompareArgs, OutputFormat, PlanArgs, RewordArgs,
 };
-use crate::patch::ParseError;
 use crate::editor::{Editor, EditorError};
 use crate::features::Feature;
 use crate::git::{GitError, GitOps};
 use crate::llm::{LlmConfig, ToolCapability};
 use crate::models::{PlannedCommit, Strategy};
+use crate::patch::ParseError;
 use crate::plan_store::{PlanFileError, PlanStore, SavedPlan};
 use crate::reorganize::{
     Absorb, ApplyResult, GroupByFile, HierarchicalReorganizer, LlmReorganizer, PreserveOriginal,
@@ -612,7 +612,10 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
         let mut rewrites: Vec<(String, String, String, String)> = Vec::new(); // (sha, old_short, new_short, new_long)
 
         // For each commit assessment, generate improved message
-        for (commit, ca) in commits.iter().zip(assessment_result.commit_assessments.iter()) {
+        for (commit, ca) in commits
+            .iter()
+            .zip(assessment_result.commit_assessments.iter())
+        {
             info!(
                 "  {} {}: {:.1}%",
                 short_sha(&commit.sha),

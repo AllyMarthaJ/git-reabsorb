@@ -301,23 +301,23 @@ impl LlmClient for ClaudeCliClient {
 
         if stream_output {
             // Stream stdout and stderr while accumulating the response
-            let stdout = child.stdout.take().ok_or_else(|| {
-                LlmError::ClientError("Failed to capture stdout".to_string())
-            })?;
-            let stderr = child.stderr.take().ok_or_else(|| {
-                LlmError::ClientError("Failed to capture stderr".to_string())
-            })?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| LlmError::ClientError("Failed to capture stdout".to_string()))?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| LlmError::ClientError("Failed to capture stderr".to_string()))?;
 
             // Spawn thread to read stderr
             let stderr_handle = std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 let mut stderr_output = String::new();
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        eprintln!("[claude stderr] {}", line);
-                        stderr_output.push_str(&line);
-                        stderr_output.push('\n');
-                    }
+                for line in reader.lines().flatten() {
+                    eprintln!("[claude stderr] {}", line);
+                    stderr_output.push_str(&line);
+                    stderr_output.push('\n');
                 }
                 stderr_output
             });
@@ -356,9 +356,9 @@ impl LlmClient for ClaudeCliClient {
             Ok(response)
         } else {
             // Buffered mode - wait for all output at once
-            let output = child
-                .wait_with_output()
-                .map_err(|e| LlmError::ClientError(format!("Failed to wait for claude CLI: {}", e)))?;
+            let output = child.wait_with_output().map_err(|e| {
+                LlmError::ClientError(format!("Failed to wait for claude CLI: {}", e))
+            })?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);

@@ -91,7 +91,10 @@ impl std::fmt::Display for ValidationIssue {
             Self::DuplicateHunkInCommit { commit_id, hunk_id } => {
                 write!(f, "{}: duplicate hunk {} within commit", commit_id, hunk_id)
             }
-            Self::DuplicateHunkAcrossCommits { hunk_id, commit_ids } => {
+            Self::DuplicateHunkAcrossCommits {
+                hunk_id,
+                commit_ids,
+            } => {
                 let commits: Vec<_> = commit_ids.iter().map(|c| c.to_string()).collect();
                 write!(
                     f,
@@ -191,7 +194,11 @@ impl ValidationResult {
         self.issues
             .iter()
             .filter_map(|issue| {
-                if let ValidationIssue::DuplicateHunkAcrossCommits { hunk_id, commit_ids } = issue {
+                if let ValidationIssue::DuplicateHunkAcrossCommits {
+                    hunk_id,
+                    commit_ids,
+                } = issue
+                {
                     Some((*hunk_id, commit_ids.clone()))
                 } else {
                     None
@@ -328,7 +335,9 @@ pub fn validate_plan(commits: &[PlannedCommit], hunks: &[Hunk]) -> ValidationRes
         .copied()
         .collect();
     if !unassigned.is_empty() {
-        issues.push(ValidationIssue::UnassignedHunks { hunk_ids: unassigned });
+        issues.push(ValidationIssue::UnassignedHunks {
+            hunk_ids: unassigned,
+        });
     }
 
     // Check for cyclic dependencies
@@ -338,7 +347,8 @@ pub fn validate_plan(commits: &[PlannedCommit], hunks: &[Hunk]) -> ValidationRes
 
     // Check for overlapping hunks across different commits
     // Build map: file_path -> [(hunk, commit_id)]
-    let mut hunks_by_file: HashMap<&std::path::Path, Vec<(&Hunk, PlannedCommitId)>> = HashMap::new();
+    let mut hunks_by_file: HashMap<&std::path::Path, Vec<(&Hunk, PlannedCommitId)>> =
+        HashMap::new();
     for commit in commits {
         for change in &commit.changes {
             if let PlannedChange::ExistingHunk(hunk_id) = change {
@@ -392,7 +402,8 @@ fn detect_cycle(commits: &[PlannedCommit]) -> Option<Vec<PlannedCommitId>> {
 
     for commit in commits {
         if !visited.contains(&commit.id) {
-            if let Some(cycle) = dfs_cycle(commit.id, commits, &mut visited, &mut rec_stack, &mut path)
+            if let Some(cycle) =
+                dfs_cycle(commit.id, commits, &mut visited, &mut rec_stack, &mut path)
             {
                 return Some(cycle);
             }
@@ -458,10 +469,7 @@ pub fn fix_duplicate_hunks(mut commits: Vec<PlannedCommit>) -> Vec<PlannedCommit
 }
 
 /// Assign orphaned hunks to a new catch-all commit
-pub fn fix_unassigned_hunks(
-    mut commits: Vec<PlannedCommit>,
-    hunks: &[Hunk],
-) -> Vec<PlannedCommit> {
+pub fn fix_unassigned_hunks(mut commits: Vec<PlannedCommit>, hunks: &[Hunk]) -> Vec<PlannedCommit> {
     let assigned: HashSet<HunkId> = commits
         .iter()
         .flat_map(|c| c.changes.iter())

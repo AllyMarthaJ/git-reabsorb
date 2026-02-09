@@ -61,7 +61,11 @@ fn format_pretty(assessment: &RangeAssessment, verbose: bool) -> String {
     for agg in sorted_aggs {
         output.push_str(&format!(
             "  {}: {:.1} (min: {:.0}, max: {:.0}, std: {:.2})\n",
-            agg.criterion_id.name(), agg.mean_score, agg.min_score, agg.max_score, agg.std_deviation
+            agg.criterion_id.name(),
+            agg.mean_score,
+            agg.min_score,
+            agg.max_score,
+            agg.std_deviation
         ));
     }
     output.push('\n');
@@ -264,7 +268,11 @@ fn format_markdown(assessment: &RangeAssessment, verbose: bool) -> String {
     for agg in sorted_aggs {
         output.push_str(&format!(
             "| {} | {:.1} | {:.0} | {:.0} | {:.2} |\n",
-            agg.criterion_id.name(), agg.mean_score, agg.min_score, agg.max_score, agg.std_deviation
+            agg.criterion_id.name(),
+            agg.mean_score,
+            agg.min_score,
+            agg.max_score,
+            agg.std_deviation
         ));
     }
     output.push('\n');

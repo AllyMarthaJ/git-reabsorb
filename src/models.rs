@@ -268,7 +268,11 @@ pub struct PlannedCommit {
 }
 
 impl PlannedCommit {
-    pub fn new(id: PlannedCommitId, description: CommitDescription, changes: Vec<PlannedChange>) -> Self {
+    pub fn new(
+        id: PlannedCommitId,
+        description: CommitDescription,
+        changes: Vec<PlannedChange>,
+    ) -> Self {
         Self {
             id,
             description,
@@ -293,7 +297,11 @@ impl PlannedCommit {
     }
 
     /// Create a PlannedCommit from hunk IDs (convenience for existing reorganizers)
-    pub fn from_hunk_ids(id: PlannedCommitId, description: CommitDescription, hunk_ids: Vec<HunkId>) -> Self {
+    pub fn from_hunk_ids(
+        id: PlannedCommitId,
+        description: CommitDescription,
+        hunk_ids: Vec<HunkId>,
+    ) -> Self {
         Self {
             id,
             description,
