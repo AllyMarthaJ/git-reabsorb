@@ -1,4 +1,4 @@
-//! LLM-based criterion assessment.
+//! LLM-based commit assessment.
 
 pub mod parser;
 pub mod prompt;
@@ -8,35 +8,34 @@ use std::sync::Arc;
 use log::debug;
 
 use crate::assessment::criteria::{
-    get_definition, AssessmentError, Criterion, CriterionDefinition, CriterionId, RangeContext,
+    get_definition, AssessmentError, CriterionDefinition, CriterionId, RangeContext,
 };
-use crate::assessment::types::CriterionScore;
+use crate::assessment::types::{CommitAssessment, CriterionScore};
 use crate::llm::LlmClient;
 use crate::models::SourceCommit;
 
-/// LLM-based criterion assessor.
-///
-/// Implements the `Criterion` trait by delegating assessment to an LLM.
-pub struct LlmCriterionAssessor {
+/// LLM-based assessor that evaluates all criteria in a single call.
+pub struct LlmAssessor {
     client: Arc<dyn LlmClient>,
-    definition: CriterionDefinition,
+    definitions: Vec<CriterionDefinition>,
     max_retries: usize,
+    max_context_commits: usize,
 }
 
-impl LlmCriterionAssessor {
-    /// Create a new LLM criterion assessor with a custom definition.
-    pub fn new(client: Arc<dyn LlmClient>, definition: CriterionDefinition) -> Self {
+impl LlmAssessor {
+    /// Create an assessor for specific criterion IDs.
+    pub fn new(
+        client: Arc<dyn LlmClient>,
+        criterion_ids: &[CriterionId],
+        max_context_commits: usize,
+    ) -> Self {
+        let definitions = criterion_ids.iter().map(|id| get_definition(*id)).collect();
         Self {
             client,
-            definition,
+            definitions,
             max_retries: 3,
+            max_context_commits,
         }
-    }
-
-    /// Create an LLM assessor for a specific criterion ID.
-    pub fn for_criterion(client: Arc<dyn LlmClient>, id: CriterionId) -> Self {
-        let definition = get_definition(id);
-        Self::new(client, definition)
     }
 
     /// Set the maximum number of retries on failure.
@@ -44,29 +43,46 @@ impl LlmCriterionAssessor {
         self.max_retries = max_retries;
         self
     }
-}
 
-impl Criterion for LlmCriterionAssessor {
-    fn definition(&self) -> &CriterionDefinition {
-        &self.definition
+    /// Maximum possible weighted score across all criteria.
+    fn max_possible_score(&self) -> f32 {
+        self.definitions
+            .iter()
+            .map(|d| d.max_weighted_score())
+            .sum()
     }
 
-    fn assess(
+    /// Assess a single commit against all criteria in one LLM call.
+    pub fn assess_commit(
         &self,
         commit: &SourceCommit,
         diff_content: &str,
         range_context: &RangeContext,
-    ) -> Result<CriterionScore, AssessmentError> {
-        let prompt_text =
-            prompt::build_assessment_prompt(&self.definition, commit, diff_content, range_context);
+        position: usize,
+        total: usize,
+    ) -> Result<CommitAssessment, AssessmentError> {
+        let prompt_text = prompt::build_assessment_prompt(
+            &self.definitions,
+            commit,
+            diff_content,
+            range_context,
+            self.max_context_commits,
+        );
 
         let mut last_error = None;
 
         for attempt in 1..=self.max_retries {
             match self.client.complete(&prompt_text) {
                 Ok(response) => {
-                    match parser::parse_criterion_response(&response, &self.definition) {
-                        Ok(score) => return Ok(score),
+                    match parser::parse_assessment_response(&response, &self.definitions) {
+                        Ok(criterion_scores) => {
+                            return Ok(self.build_assessment(
+                                commit,
+                                criterion_scores,
+                                position,
+                                total,
+                            ));
+                        }
                         Err(e) if attempt < self.max_retries => {
                             debug!(
                                 "Parse error (attempt {}/{}): {}",
@@ -96,6 +112,31 @@ impl Criterion for LlmCriterionAssessor {
 
         Err(last_error.unwrap_or_else(|| AssessmentError::LlmFailed("Max retries exceeded".into())))
     }
+
+    fn build_assessment(
+        &self,
+        commit: &SourceCommit,
+        criterion_scores: Vec<CriterionScore>,
+        position: usize,
+        total: usize,
+    ) -> CommitAssessment {
+        let total_weighted: f32 = criterion_scores.iter().map(|s| s.weighted_score).sum();
+        let max_possible = self.max_possible_score();
+        let overall_score = if max_possible > 0.0 {
+            total_weighted / max_possible
+        } else {
+            0.0
+        };
+
+        CommitAssessment {
+            commit_sha: commit.sha.clone(),
+            commit_message: commit.message.short.clone(),
+            criterion_scores,
+            overall_score,
+            position,
+            total_commits: total,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -124,16 +165,49 @@ mod tests {
     #[test]
     fn assesses_with_mock_client() {
         let client = Arc::new(MockLlmClient::new(
-            r#"{"level": 4, "rationale": "Good atomicity", "evidence": ["Single change"], "suggestions": []}"#,
+            r#"{"scores": [{"criterion": "atomicity", "level": 4, "rationale": "Good atomicity", "evidence": ["Single change"], "suggestions": []}]}"#,
         ));
 
-        let assessor = LlmCriterionAssessor::for_criterion(client, CriterionId::Atomicity);
+        let assessor = LlmAssessor::new(client, &[CriterionId::Atomicity], 10);
         let commit = SourceCommit::new("abc123", "Add feature", "Add feature\n\nDetails");
         let context = RangeContext::new(vec![commit.clone()], 0);
 
-        let score = assessor.assess(&commit, "+code", &context).unwrap();
+        let assessment = assessor
+            .assess_commit(&commit, "+code", &context, 0, 1)
+            .unwrap();
 
-        assert_eq!(score.level, 4);
-        assert_eq!(score.criterion_id, CriterionId::Atomicity);
+        assert_eq!(assessment.criterion_scores.len(), 1);
+        assert_eq!(assessment.criterion_scores[0].level, 4);
+        assert_eq!(
+            assessment.criterion_scores[0].criterion_id,
+            CriterionId::Atomicity
+        );
+        assert_eq!(assessment.position, 0);
+        assert_eq!(assessment.total_commits, 1);
+    }
+
+    #[test]
+    fn assesses_multiple_criteria() {
+        let client = Arc::new(MockLlmClient::new(
+            r#"{"scores": [
+                {"criterion": "atomicity", "level": 4, "rationale": "Good", "evidence": ["a"], "suggestions": []},
+                {"criterion": "message_quality", "level": 3, "rationale": "Adequate", "evidence": ["b"], "suggestions": ["improve"]}
+            ]}"#,
+        ));
+
+        let assessor = LlmAssessor::new(
+            client,
+            &[CriterionId::Atomicity, CriterionId::MessageQuality],
+            10,
+        );
+        let commit = SourceCommit::new("abc123", "Add feature", "Add feature\n\nDetails");
+        let context = RangeContext::new(vec![commit.clone()], 0);
+
+        let assessment = assessor
+            .assess_commit(&commit, "+code", &context, 0, 1)
+            .unwrap();
+
+        assert_eq!(assessment.criterion_scores.len(), 2);
+        assert!(assessment.overall_score > 0.0);
     }
 }

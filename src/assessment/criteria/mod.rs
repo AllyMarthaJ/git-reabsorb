@@ -145,20 +145,6 @@ pub enum AssessmentError {
     Io(#[from] std::io::Error),
 }
 
-/// Trait for assessing commits against a criterion.
-pub trait Criterion: Send + Sync {
-    /// Get the criterion definition with rubric.
-    fn definition(&self) -> &CriterionDefinition;
-
-    /// Assess a single commit in context of the range.
-    fn assess(
-        &self,
-        commit: &SourceCommit,
-        diff_content: &str,
-        range_context: &RangeContext,
-    ) -> Result<CriterionScore, AssessmentError>;
-}
-
 /// Get the definition for a criterion by ID.
 pub fn get_definition(id: CriterionId) -> CriterionDefinition {
     match id {
