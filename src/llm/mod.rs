@@ -314,7 +314,7 @@ impl LlmClient for ClaudeCliClient {
             let stderr_handle = std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 let mut stderr_output = String::new();
-                for line in reader.lines().flatten() {
+                for line in reader.lines().map_while(Result::ok) {
                     eprintln!("[claude stderr] {}", line);
                     stderr_output.push_str(&line);
                     stderr_output.push('\n');
