@@ -67,7 +67,8 @@ impl Drop for LlmFileSession {
 /// Extract a file path from LLM stdout and read its contents.
 ///
 /// The LLM is expected to output the absolute path to a JSON file it created.
-/// We find the path, read the file, and optionally copy it to our tmp dir.
+/// We find the path, read the file, and validate it's under an allowed directory
+/// (system temp dir or `.git/reabsorb/tmp`) to prevent reading arbitrary files.
 pub fn read_response_from_path(stdout: &str) -> Result<String, LlmError> {
     // Look for lines that look like file paths
     let path = extract_file_path(stdout).ok_or_else(|| {
@@ -84,7 +85,30 @@ pub fn read_response_from_path(stdout: &str) -> Result<String, LlmError> {
         )));
     }
 
-    let content = fs::read_to_string(&path)?;
+    // Canonicalize and validate the path is under an allowed directory
+    let canonical = fs::canonicalize(&path).map_err(|e| {
+        LlmError::InvalidResponse(format!("Could not resolve path {}: {}", path.display(), e))
+    })?;
+
+    let allowed_dirs = [std::env::temp_dir(), PathBuf::from(REABSORB_TMP_DIR)];
+
+    let is_allowed = allowed_dirs.iter().any(|dir| {
+        if let Ok(canonical_dir) = fs::canonicalize(dir) {
+            canonical.starts_with(&canonical_dir)
+        } else {
+            false
+        }
+    });
+
+    if !is_allowed {
+        return Err(LlmError::InvalidResponse(format!(
+            "LLM output path {} is not under an allowed directory (system temp or {})",
+            canonical.display(),
+            REABSORB_TMP_DIR
+        )));
+    }
+
+    let content = fs::read_to_string(&canonical)?;
     if content.trim().is_empty() {
         return Err(LlmError::InvalidResponse(
             "LLM output file exists but is empty".to_string(),
@@ -96,12 +120,13 @@ pub fn read_response_from_path(stdout: &str) -> Result<String, LlmError> {
 
 /// Extract a file path from LLM output text.
 ///
-/// Looks for absolute paths (starting with /) that end in .json
+/// Looks for absolute paths that end in .json, using `Path::is_absolute()`
+/// for cross-platform compatibility (Unix `/` and Windows `C:\` paths).
 fn extract_file_path(text: &str) -> Option<PathBuf> {
+    use std::path::Path;
     for line in text.lines() {
         let trimmed = line.trim();
-        // Look for absolute paths ending in .json
-        if trimmed.starts_with('/') && trimmed.ends_with(".json") {
+        if trimmed.ends_with(".json") && Path::new(trimmed).is_absolute() {
             return Some(PathBuf::from(trimmed));
         }
     }
@@ -233,5 +258,30 @@ mod tests {
         let stdout = "/nonexistent/path.json\n";
         let result = read_response_from_path(stdout);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_response_from_path_rejects_outside_allowed_dirs() {
+        // Create a .json file outside allowed directories
+        let dir = std::env::current_dir().unwrap().join("test-disallowed");
+        fs::create_dir_all(&dir).unwrap();
+        let test_file = dir.join("sneaky.json");
+        fs::write(&test_file, r#"{"commits": []}"#).unwrap();
+
+        let stdout = format!("{}\n", test_file.canonicalize().unwrap().display());
+        let result = read_response_from_path(&stdout);
+
+        // Cleanup
+        let _ = fs::remove_file(&test_file);
+        let _ = fs::remove_dir(&dir);
+
+        assert!(result.is_err());
+        if let Err(LlmError::InvalidResponse(msg)) = result {
+            assert!(
+                msg.contains("not under an allowed directory"),
+                "Expected path validation error, got: {}",
+                msg
+            );
+        }
     }
 }
