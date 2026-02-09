@@ -1,5 +1,6 @@
 //! JSON parsing for LLM responses
 
+use std::fs;
 use std::path::PathBuf;
 
 use crate::models::{DiffLine, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId};
@@ -7,6 +8,19 @@ use crate::utils::extract_json_str;
 
 use super::types::{ChangeSpec, LlmCommit};
 use crate::llm::LlmError;
+
+/// Dump content to a temp file for debugging, returning the path if successful.
+fn dump_to_tmp(label: &str, content: &str) -> Option<PathBuf> {
+    let dir = PathBuf::from(".git/reabsorb/tmp");
+    fs::create_dir_all(&dir).ok()?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let path = dir.join(format!("{}-{}.txt", label, timestamp));
+    fs::write(&path, content).ok()?;
+    Some(path)
+}
 
 /// Wrapper for deserializing the LLM's JSON response
 #[derive(serde::Deserialize)]
@@ -18,15 +32,30 @@ pub fn extract_json(response: &str) -> Result<Vec<LlmCommit>, LlmError> {
     let json_str = match extract_json_str(response) {
         Some(json) => json.trim(),
         None => {
+            let detail = match dump_to_tmp("no-json-response", response) {
+                Some(path) => format!("Full response dumped to {}", path.display()),
+                None => format!(
+                    "Response (first 200 chars): {}",
+                    response.chars().take(200).collect::<String>()
+                ),
+            };
             return Err(LlmError::ParseError(format!(
-                "No JSON found in response. Response content: {}",
-                response
+                "No JSON found in response. {}",
+                detail
             )));
         }
     };
 
-    let parsed: LlmResponse = serde_json::from_str(json_str)
-        .map_err(|e| LlmError::ParseError(format!("{}: {}", e, json_str)))?;
+    let parsed: LlmResponse = serde_json::from_str(json_str).map_err(|e| {
+        let detail = match dump_to_tmp("json-parse-error", json_str) {
+            Some(path) => format!("Full JSON dumped to {}", path.display()),
+            None => format!(
+                "JSON (first 200 chars): {}",
+                json_str.chars().take(200).collect::<String>()
+            ),
+        };
+        LlmError::ParseError(format!("{}: {}", e, detail))
+    })?;
     Ok(parsed.commits)
 }
 
@@ -209,9 +238,10 @@ That's it!"#;
                 "Error should mention no JSON found: {}",
                 msg
             );
+            // Response content is either in a dump file or inline (first 200 chars)
             assert!(
-                msg.contains("Running node"),
-                "Error should include the response content: {}",
+                msg.contains("Running node") || msg.contains("dumped to"),
+                "Error should include response content or dump path: {}",
                 msg
             );
         }
