@@ -10,7 +10,7 @@ pub mod report;
 pub mod types;
 
 pub use comparison::{compare_assessments, load_assessment, save_assessment};
-pub use criteria::{AssessmentError, Criterion, CriterionId, RangeContext};
+pub use criteria::{AssessmentError, CriterionId, RangeContext};
 pub use types::{
     AggregateScore, AssessmentComparison, AssessmentLevel, CommitAssessment, CriterionScore,
     RangeAssessment,
@@ -27,13 +27,14 @@ use crate::llm::LlmClient;
 use crate::models::SourceCommit;
 
 use criteria::get_definition;
-use llm::LlmCriterionAssessor;
+use llm::LlmAssessor;
 
 /// Main assessment engine for evaluating commit quality.
 pub struct AssessmentEngine {
     client: Arc<dyn LlmClient>,
     criterion_ids: Vec<CriterionId>,
     max_parallel: usize,
+    max_context_commits: usize,
 }
 
 impl AssessmentEngine {
@@ -42,7 +43,8 @@ impl AssessmentEngine {
         Self {
             client,
             criterion_ids: criterion_ids.to_vec(),
-            max_parallel: 4, // Default parallelism for commits
+            max_parallel: 4,
+            max_context_commits: 10,
         }
     }
 
@@ -54,6 +56,12 @@ impl AssessmentEngine {
     /// Set maximum parallel commit assessments.
     pub fn with_parallelism(mut self, max_parallel: usize) -> Self {
         self.max_parallel = max_parallel;
+        self
+    }
+
+    /// Set maximum context commits shown in prompts.
+    pub fn with_max_context_commits(mut self, max_context_commits: usize) -> Self {
+        self.max_context_commits = max_context_commits;
         self
     }
 
@@ -78,6 +86,13 @@ impl AssessmentEngine {
             commit_data.push((position, commit.clone(), diff_content));
         }
 
+        // Create a shared assessor for all threads
+        let assessor = Arc::new(LlmAssessor::new(
+            Arc::clone(&self.client),
+            &self.criterion_ids,
+            self.max_context_commits,
+        ));
+
         // Assess commits in parallel batches
         info!(
             "Assessing {} commits ({} parallel)...",
@@ -93,8 +108,7 @@ impl AssessmentEngine {
             let handles: Vec<_> = chunk
                 .iter()
                 .map(|(position, commit, diff_content)| {
-                    let client = Arc::clone(&self.client);
-                    let criterion_ids = self.criterion_ids.clone();
+                    let assessor = Arc::clone(&assessor);
                     let results = Arc::clone(&results);
                     let errors = Arc::clone(&errors);
                     let commits_clone = commits.to_vec();
@@ -112,13 +126,13 @@ impl AssessmentEngine {
                             commit.message.short
                         );
 
-                        match assess_single_commit(
-                            &client,
-                            &criterion_ids,
+                        let range_context =
+                            RangeContext::new(commits_clone, position).with_files(files_clone);
+
+                        match assessor.assess_commit(
                             &commit,
                             &diff_content,
-                            &commits_clone,
-                            &files_clone,
+                            &range_context,
                             position,
                             total,
                         ) {
@@ -242,48 +256,6 @@ impl AssessmentEngine {
 
         aggregates
     }
-}
-
-/// Assess a single commit against all criteria (called from thread).
-#[allow(clippy::too_many_arguments)]
-fn assess_single_commit(
-    client: &Arc<dyn LlmClient>,
-    criterion_ids: &[CriterionId],
-    commit: &SourceCommit,
-    diff_content: &str,
-    all_commits: &[SourceCommit],
-    files_in_range: &[String],
-    position: usize,
-    total: usize,
-) -> Result<CommitAssessment, AssessmentError> {
-    let range_context =
-        RangeContext::new(all_commits.to_vec(), position).with_files(files_in_range.to_vec());
-
-    let mut criterion_scores = Vec::new();
-    let mut max_possible: f32 = 0.0;
-
-    for criterion_id in criterion_ids {
-        let assessor = LlmCriterionAssessor::for_criterion(client.clone(), *criterion_id);
-        let score = assessor.assess(commit, diff_content, &range_context)?;
-        max_possible += assessor.definition().max_weighted_score();
-        criterion_scores.push(score);
-    }
-
-    let total_weighted: f32 = criterion_scores.iter().map(|s| s.weighted_score).sum();
-    let overall_score = if max_possible > 0.0 {
-        total_weighted / max_possible
-    } else {
-        0.0
-    };
-
-    Ok(CommitAssessment {
-        commit_sha: commit.sha.clone(),
-        commit_message: commit.message.short.clone(),
-        criterion_scores,
-        overall_score,
-        position,
-        total_commits: total,
-    })
 }
 
 /// Get definitions for specific criterion IDs.
