@@ -451,15 +451,8 @@ Both hunks must be in the SAME commit to be applied together correctly.
             hunk.id, commit_a_idx
         ));
         prompt.push_str(&format!(
-            "Lines: old @{} (count: {})\n```diff\n{}\n```\n\n",
-            hunk.old_start,
-            context
-                .hunks
-                .iter()
-                .find(|h| h.id == hunk_a_id)
-                .map(|_| "see diff")
-                .unwrap_or("?"),
-            hunk.diff_content
+            "Lines: old @{}\n```diff\n{}\n```\n\n",
+            hunk.old_start, hunk.diff_content
         ));
     }
 
