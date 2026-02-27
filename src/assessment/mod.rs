@@ -10,7 +10,7 @@ pub mod report;
 pub mod types;
 
 pub use comparison::{compare_assessments, load_assessment, save_assessment};
-pub use criteria::{AssessmentError, CriterionId, RangeContext};
+pub use criteria::{AssessmentError, CriterionId, DiffStats, RangeContext};
 pub use types::{
     AggregateScore, AssessmentComparison, AssessmentLevel, CommitAssessment, CriterionScore,
     RangeAssessment,
@@ -26,7 +26,7 @@ use crate::git::GitOps;
 use crate::llm::LlmClient;
 use crate::models::SourceCommit;
 
-use criteria::get_definition;
+use criteria::{compute_scope_score, get_definition};
 use llm::LlmAssessor;
 
 /// Main assessment engine for evaluating commit quality.
@@ -65,6 +65,21 @@ impl AssessmentEngine {
         self
     }
 
+    /// Criterion IDs that should be assessed by the LLM (excludes deterministic ones).
+    fn llm_criterion_ids(&self) -> Vec<CriterionId> {
+        self.criterion_ids
+            .iter()
+            .filter(|id| **id != CriterionId::ScopeAppropriateness)
+            .copied()
+            .collect()
+    }
+
+    /// Whether scope should be computed deterministically.
+    fn includes_scope(&self) -> bool {
+        self.criterion_ids
+            .contains(&CriterionId::ScopeAppropriateness)
+    }
+
     /// Assess a range of commits in parallel.
     pub fn assess_range<G: GitOps>(
         &self,
@@ -78,20 +93,23 @@ impl AssessmentEngine {
         // Collect all files changed in the range for context
         let files_in_range = self.collect_files_in_range(git, commits);
 
-        // Pre-fetch all diffs (git operations are fast, do sequentially)
+        // Pre-fetch all diffs and compute diff stats (git operations are fast, do sequentially)
         info!("Fetching diffs for {} commits...", total);
-        let mut commit_data: Vec<(usize, SourceCommit, String)> = Vec::new();
+        let mut commit_data: Vec<(usize, SourceCommit, String, DiffStats)> = Vec::new();
         for (position, commit) in commits.iter().enumerate() {
-            let diff_content = self.get_diff_content(git, &commit.sha)?;
-            commit_data.push((position, commit.clone(), diff_content));
+            let (diff_content, diff_stats) = self.get_diff_content_and_stats(git, &commit.sha)?;
+            commit_data.push((position, commit.clone(), diff_content, diff_stats));
         }
 
-        // Create a shared assessor for all threads
+        // Create a shared assessor for LLM-assessed criteria only
+        let llm_ids = self.llm_criterion_ids();
         let assessor = Arc::new(LlmAssessor::new(
             Arc::clone(&self.client),
-            &self.criterion_ids,
+            &llm_ids,
             self.max_context_commits,
         ));
+
+        let includes_scope = self.includes_scope();
 
         // Assess commits in parallel batches
         info!(
@@ -107,7 +125,7 @@ impl AssessmentEngine {
         for chunk in chunks {
             let handles: Vec<_> = chunk
                 .iter()
-                .map(|(position, commit, diff_content)| {
+                .map(|(position, commit, diff_content, diff_stats)| {
                     let assessor = Arc::clone(&assessor);
                     let results = Arc::clone(&results);
                     let errors = Arc::clone(&errors);
@@ -116,6 +134,7 @@ impl AssessmentEngine {
                     let position = *position;
                     let commit = commit.clone();
                     let diff_content = diff_content.clone();
+                    let diff_stats = diff_stats.clone();
 
                     thread::spawn(move || {
                         debug!(
@@ -132,11 +151,35 @@ impl AssessmentEngine {
                         match assessor.assess_commit(
                             &commit,
                             &diff_content,
+                            &diff_stats,
                             &range_context,
                             position,
                             total,
                         ) {
-                            Ok(assessment) => {
+                            Ok(mut assessment) => {
+                                // Add deterministic scope score if requested
+                                if includes_scope {
+                                    let scope_score = compute_scope_score(&diff_stats);
+                                    assessment.criterion_scores.push(scope_score);
+                                    // Recalculate overall score including scope
+                                    let total_weighted: f32 = assessment
+                                        .criterion_scores
+                                        .iter()
+                                        .map(|s| s.weighted_score)
+                                        .sum();
+                                    let max_possible: f32 = assessment
+                                        .criterion_scores
+                                        .iter()
+                                        .map(|s| {
+                                            get_definition(s.criterion_id).max_weighted_score()
+                                        })
+                                        .sum();
+                                    assessment.overall_score = if max_possible > 0.0 {
+                                        total_weighted / max_possible
+                                    } else {
+                                        0.0
+                                    };
+                                }
                                 let mut results = results.lock().unwrap();
                                 results.push(assessment);
                             }
@@ -188,16 +231,52 @@ impl AssessmentEngine {
         })
     }
 
-    fn get_diff_content<G: GitOps>(&self, git: &G, sha: &str) -> Result<String, AssessmentError> {
+    fn get_diff_content_and_stats<G: GitOps>(
+        &self,
+        git: &G,
+        sha: &str,
+    ) -> Result<(String, DiffStats), AssessmentError> {
         let hunks = git
             .read_hunks(sha, 0)
             .map_err(|e| AssessmentError::GitError(e.to_string()))?;
 
-        Ok(hunks
+        let diff_content = hunks
             .iter()
             .map(|h| h.to_patch())
             .collect::<Vec<_>>()
-            .join("\n"))
+            .join("\n");
+
+        // Compute stats from hunks
+        let mut lines_added = 0usize;
+        let mut lines_removed = 0usize;
+        let mut files: Vec<String> = Vec::new();
+
+        for hunk in &hunks {
+            let patch = hunk.to_patch();
+            for line in patch.lines() {
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    lines_added += 1;
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    lines_removed += 1;
+                }
+            }
+            // Count unique files from diff headers
+            for line in patch.lines() {
+                if let Some(path) = line.strip_prefix("+++ b/") {
+                    if !files.contains(&path.to_string()) {
+                        files.push(path.to_string());
+                    }
+                }
+            }
+        }
+
+        let diff_stats = DiffStats {
+            lines_added,
+            lines_removed,
+            files_changed: files.len(),
+        };
+
+        Ok((diff_content, diff_stats))
     }
 
     fn collect_files_in_range<G: GitOps>(&self, git: &G, commits: &[SourceCommit]) -> Vec<String> {
@@ -228,7 +307,7 @@ impl AssessmentEngine {
                     ca.criterion_scores
                         .iter()
                         .find(|s| s.criterion_id == def.id)
-                        .map(|s| s.level as f32)
+                        .map(|s| s.weighted_score)
                 })
                 .collect();
 
@@ -270,6 +349,6 @@ mod tests {
     #[test]
     fn criterion_id_all() {
         let all = CriterionId::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 4);
     }
 }

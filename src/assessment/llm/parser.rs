@@ -114,43 +114,43 @@ pub fn parse_assessment_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assessment::criteria::{atomicity, cohesion, CriterionId};
+    use crate::assessment::criteria::{coherence, self_containment, CriterionId};
 
     #[test]
     fn parses_valid_batched_response() {
         let response = r#"{"scores": [
-            {"criterion": "atomicity", "level": 4, "rationale": "Single logical change", "evidence": ["One purpose"], "suggestions": []}
+            {"criterion": "coherence", "level": 4, "rationale": "Single logical change", "evidence": ["One purpose"], "suggestions": []}
         ]}"#;
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
 
         let scores = parse_assessment_response(response, &defs).unwrap();
 
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].level, 4);
-        assert_eq!(scores[0].criterion_id, CriterionId::Atomicity);
+        assert_eq!(scores[0].criterion_id, CriterionId::Coherence);
     }
 
     #[test]
     fn parses_multi_criterion_response() {
         let response = r#"{"scores": [
-            {"criterion": "atomicity", "level": 4, "rationale": "Good", "evidence": ["a"], "suggestions": []},
-            {"criterion": "logical_cohesion", "level": 3, "rationale": "Adequate", "evidence": ["b"], "suggestions": ["improve"]}
+            {"criterion": "coherence", "level": 4, "rationale": "Good", "evidence": ["a"], "suggestions": []},
+            {"criterion": "self_containment", "level": 3, "rationale": "Adequate", "evidence": ["b"], "suggestions": ["improve"]}
         ]}"#;
-        let defs = vec![atomicity::definition(), cohesion::definition()];
+        let defs = vec![coherence::definition(), self_containment::definition()];
 
         let scores = parse_assessment_response(response, &defs).unwrap();
 
         assert_eq!(scores.len(), 2);
-        assert_eq!(scores[0].criterion_id, CriterionId::Atomicity);
-        assert_eq!(scores[1].criterion_id, CriterionId::LogicalCohesion);
+        assert_eq!(scores[0].criterion_id, CriterionId::Coherence);
+        assert_eq!(scores[1].criterion_id, CriterionId::SelfContainment);
     }
 
     #[test]
     fn parses_response_with_markdown() {
         let response = r#"```json
-{"scores": [{"criterion": "atomicity", "level": 3, "rationale": "Adequate", "evidence": ["context"], "suggestions": ["focus"]}]}
+{"scores": [{"criterion": "coherence", "level": 3, "rationale": "Adequate", "evidence": ["context"], "suggestions": ["focus"]}]}
 ```"#;
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
 
         let scores = parse_assessment_response(response, &defs).unwrap();
 
@@ -159,8 +159,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_level() {
-        let response = r#"{"scores": [{"criterion": "atomicity", "level": 7, "rationale": "Test", "evidence": [], "suggestions": []}]}"#;
-        let defs = vec![atomicity::definition()];
+        let response = r#"{"scores": [{"criterion": "coherence", "level": 7, "rationale": "Test", "evidence": [], "suggestions": []}]}"#;
+        let defs = vec![coherence::definition()];
 
         let result = parse_assessment_response(response, &defs);
         assert!(matches!(result, Err(ParseError::LevelOutOfRange(7))));
@@ -169,22 +169,22 @@ mod tests {
     #[test]
     fn rejects_missing_criteria() {
         let response = r#"{"scores": [
-            {"criterion": "atomicity", "level": 4, "rationale": "Good", "evidence": [], "suggestions": []}
+            {"criterion": "coherence", "level": 4, "rationale": "Good", "evidence": [], "suggestions": []}
         ]}"#;
-        // Expect both atomicity and cohesion
-        let defs = vec![atomicity::definition(), cohesion::definition()];
+        // Expect both coherence and self_containment
+        let defs = vec![coherence::definition(), self_containment::definition()];
 
         let result = parse_assessment_response(response, &defs);
         assert!(matches!(result, Err(ParseError::MissingCriteria(_))));
         if let Err(ParseError::MissingCriteria(msg)) = result {
-            assert!(msg.contains("logical_cohesion"));
+            assert!(msg.contains("self_containment"));
         }
     }
 
     #[test]
     fn rejects_unknown_criterion() {
         let response = r#"{"scores": [{"criterion": "nonexistent", "level": 3, "rationale": "Test", "evidence": [], "suggestions": []}]}"#;
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
 
         let result = parse_assessment_response(response, &defs);
         assert!(matches!(result, Err(ParseError::UnknownCriterion(_))));
@@ -193,10 +193,10 @@ mod tests {
     #[test]
     fn rejects_duplicate_criterion() {
         let response = r#"{"scores": [
-            {"criterion": "atomicity", "level": 4, "rationale": "Good", "evidence": [], "suggestions": []},
-            {"criterion": "atomicity", "level": 3, "rationale": "Also good", "evidence": [], "suggestions": []}
+            {"criterion": "coherence", "level": 4, "rationale": "Good", "evidence": [], "suggestions": []},
+            {"criterion": "coherence", "level": 3, "rationale": "Also good", "evidence": [], "suggestions": []}
         ]}"#;
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
 
         let result = parse_assessment_response(response, &defs);
         assert!(matches!(result, Err(ParseError::DuplicateCriterion(_))));
@@ -204,22 +204,22 @@ mod tests {
 
     #[test]
     fn sorts_scores_to_match_definitions_order() {
-        // Response has cohesion before atomicity, but definitions have atomicity first
+        // Response has self_containment before coherence, but definitions have coherence first
         let response = r#"{"scores": [
-            {"criterion": "logical_cohesion", "level": 3, "rationale": "Ok", "evidence": [], "suggestions": []},
-            {"criterion": "atomicity", "level": 4, "rationale": "Good", "evidence": [], "suggestions": []}
+            {"criterion": "self_containment", "level": 3, "rationale": "Ok", "evidence": [], "suggestions": []},
+            {"criterion": "coherence", "level": 4, "rationale": "Good", "evidence": [], "suggestions": []}
         ]}"#;
-        let defs = vec![atomicity::definition(), cohesion::definition()];
+        let defs = vec![coherence::definition(), self_containment::definition()];
 
         let scores = parse_assessment_response(response, &defs).unwrap();
-        assert_eq!(scores[0].criterion_id, CriterionId::Atomicity);
-        assert_eq!(scores[1].criterion_id, CriterionId::LogicalCohesion);
+        assert_eq!(scores[0].criterion_id, CriterionId::Coherence);
+        assert_eq!(scores[1].criterion_id, CriterionId::SelfContainment);
     }
 
     #[test]
     fn rejects_no_json() {
         let response = "This response has no JSON";
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
 
         let result = parse_assessment_response(response, &defs);
         assert!(matches!(result, Err(ParseError::NoJson)));
