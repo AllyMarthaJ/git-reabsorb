@@ -8,7 +8,7 @@ use std::sync::Arc;
 use log::debug;
 
 use crate::assessment::criteria::{
-    get_definition, AssessmentError, CriterionDefinition, CriterionId, RangeContext,
+    get_definition, AssessmentError, CriterionDefinition, CriterionId, DiffStats, RangeContext,
 };
 use crate::assessment::types::{CommitAssessment, CriterionScore};
 use crate::llm::LlmClient;
@@ -24,6 +24,9 @@ pub struct LlmAssessor {
 
 impl LlmAssessor {
     /// Create an assessor for specific criterion IDs.
+    ///
+    /// Only LLM-assessed criteria should be passed here (not ScopeAppropriateness,
+    /// which is computed deterministically by the engine).
     pub fn new(
         client: Arc<dyn LlmClient>,
         criterion_ids: &[CriterionId],
@@ -52,11 +55,12 @@ impl LlmAssessor {
             .sum()
     }
 
-    /// Assess a single commit against all criteria in one LLM call.
+    /// Assess a single commit against all LLM-assessed criteria in one call.
     pub fn assess_commit(
         &self,
         commit: &SourceCommit,
         diff_content: &str,
+        diff_stats: &DiffStats,
         range_context: &RangeContext,
         position: usize,
         total: usize,
@@ -65,6 +69,7 @@ impl LlmAssessor {
             &self.definitions,
             commit,
             diff_content,
+            diff_stats,
             range_context,
             self.max_context_commits,
         );
@@ -165,22 +170,27 @@ mod tests {
     #[test]
     fn assesses_with_mock_client() {
         let client = Arc::new(MockLlmClient::new(
-            r#"{"scores": [{"criterion": "atomicity", "level": 4, "rationale": "Good atomicity", "evidence": ["Single change"], "suggestions": []}]}"#,
+            r#"{"scores": [{"criterion": "coherence", "level": 4, "rationale": "Good coherence", "evidence": ["Single change"], "suggestions": []}]}"#,
         ));
 
-        let assessor = LlmAssessor::new(client, &[CriterionId::Atomicity], 10);
+        let assessor = LlmAssessor::new(client, &[CriterionId::Coherence], 10);
         let commit = SourceCommit::new("abc123", "Add feature", "Add feature\n\nDetails");
         let context = RangeContext::new(vec![commit.clone()], 0);
+        let stats = DiffStats {
+            lines_added: 10,
+            lines_removed: 0,
+            files_changed: 1,
+        };
 
         let assessment = assessor
-            .assess_commit(&commit, "+code", &context, 0, 1)
+            .assess_commit(&commit, "+code", &stats, &context, 0, 1)
             .unwrap();
 
         assert_eq!(assessment.criterion_scores.len(), 1);
         assert_eq!(assessment.criterion_scores[0].level, 4);
         assert_eq!(
             assessment.criterion_scores[0].criterion_id,
-            CriterionId::Atomicity
+            CriterionId::Coherence
         );
         assert_eq!(assessment.position, 0);
         assert_eq!(assessment.total_commits, 1);
@@ -190,21 +200,26 @@ mod tests {
     fn assesses_multiple_criteria() {
         let client = Arc::new(MockLlmClient::new(
             r#"{"scores": [
-                {"criterion": "atomicity", "level": 4, "rationale": "Good", "evidence": ["a"], "suggestions": []},
+                {"criterion": "coherence", "level": 4, "rationale": "Good", "evidence": ["a"], "suggestions": []},
                 {"criterion": "message_quality", "level": 3, "rationale": "Adequate", "evidence": ["b"], "suggestions": ["improve"]}
             ]}"#,
         ));
 
         let assessor = LlmAssessor::new(
             client,
-            &[CriterionId::Atomicity, CriterionId::MessageQuality],
+            &[CriterionId::Coherence, CriterionId::MessageQuality],
             10,
         );
         let commit = SourceCommit::new("abc123", "Add feature", "Add feature\n\nDetails");
         let context = RangeContext::new(vec![commit.clone()], 0);
+        let stats = DiffStats {
+            lines_added: 10,
+            lines_removed: 0,
+            files_changed: 1,
+        };
 
         let assessment = assessor
-            .assess_commit(&commit, "+code", &context, 0, 1)
+            .assess_commit(&commit, "+code", &stats, &context, 0, 1)
             .unwrap();
 
         assert_eq!(assessment.criterion_scores.len(), 2);

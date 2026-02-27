@@ -1,10 +1,9 @@
 //! Criterion definitions and trait for commit assessment.
 
-pub mod atomicity;
-pub mod cohesion;
+pub mod coherence;
 pub mod message;
-pub mod reversibility;
 pub mod scope;
+pub mod self_containment;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,33 +14,39 @@ use crate::models::SourceCommit;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CriterionId {
-    Atomicity,
+    Coherence,
     MessageQuality,
-    LogicalCohesion,
+    SelfContainment,
     ScopeAppropriateness,
-    Reversibility,
 }
 
 impl CriterionId {
-    /// Returns all available criterion IDs.
+    /// Returns the LLM-assessed criterion IDs (excludes Scope, which is deterministic).
+    pub fn llm_assessed() -> &'static [CriterionId] {
+        &[
+            CriterionId::Coherence,
+            CriterionId::MessageQuality,
+            CriterionId::SelfContainment,
+        ]
+    }
+
+    /// Returns all criterion IDs including deterministic ones.
     pub fn all() -> &'static [CriterionId] {
         &[
-            CriterionId::Atomicity,
+            CriterionId::Coherence,
             CriterionId::MessageQuality,
-            CriterionId::LogicalCohesion,
+            CriterionId::SelfContainment,
             CriterionId::ScopeAppropriateness,
-            CriterionId::Reversibility,
         ]
     }
 
     /// Returns the human-readable name of this criterion.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Atomicity => "Atomicity",
+            Self::Coherence => "Coherence",
             Self::MessageQuality => "Message Quality",
-            Self::LogicalCohesion => "Logical Cohesion",
+            Self::SelfContainment => "Self-Containment",
             Self::ScopeAppropriateness => "Scope Appropriateness",
-            Self::Reversibility => "Reversibility",
         }
     }
 }
@@ -49,11 +54,10 @@ impl CriterionId {
 impl std::fmt::Display for CriterionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Atomicity => write!(f, "atomicity"),
+            Self::Coherence => write!(f, "coherence"),
             Self::MessageQuality => write!(f, "message_quality"),
-            Self::LogicalCohesion => write!(f, "logical_cohesion"),
+            Self::SelfContainment => write!(f, "self_containment"),
             Self::ScopeAppropriateness => write!(f, "scope_appropriateness"),
-            Self::Reversibility => write!(f, "reversibility"),
         }
     }
 }
@@ -63,11 +67,10 @@ impl std::str::FromStr for CriterionId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "atomicity" => Ok(Self::Atomicity),
+            "coherence" | "atomicity" | "cohesion" | "logical_cohesion" => Ok(Self::Coherence),
             "message_quality" | "message" => Ok(Self::MessageQuality),
-            "logical_cohesion" | "cohesion" => Ok(Self::LogicalCohesion),
+            "self_containment" | "reversibility" => Ok(Self::SelfContainment),
             "scope_appropriateness" | "scope" => Ok(Self::ScopeAppropriateness),
-            "reversibility" => Ok(Self::Reversibility),
             _ => Err(format!("Unknown criterion: {}", s)),
         }
     }
@@ -132,6 +135,63 @@ impl RangeContext {
     }
 }
 
+/// Diff statistics for deterministic scope scoring.
+#[derive(Debug, Clone)]
+pub struct DiffStats {
+    pub lines_added: usize,
+    pub lines_removed: usize,
+    pub files_changed: usize,
+}
+
+impl DiffStats {
+    pub fn total_lines(&self) -> usize {
+        self.lines_added + self.lines_removed
+    }
+}
+
+/// Compute a deterministic scope score from diff statistics.
+pub fn compute_scope_score(stats: &DiffStats) -> CriterionScore {
+    let def = scope::definition();
+    let total = stats.total_lines();
+
+    let level: u8 = if total == 0 || total > 800 {
+        1
+    } else if total > 400 || (stats.files_changed > 20 && total > 200) {
+        2
+    } else if total > 200 {
+        3
+    } else if total > 30 {
+        4
+    } else {
+        5
+    };
+
+    let weight = def.weight_for_level(level);
+
+    let rationale = match level {
+        1 if total == 0 => "Empty diff (whitespace-only or no changes)".to_string(),
+        1 => format!("{} lines changed — too large for effective review", total),
+        2 => format!("{} lines across {} files — should be split", total, stats.files_changed),
+        3 => format!("{} lines — reviewable but could be split", total),
+        4 => format!("{} lines — good size for review", total),
+        5 => format!("{} lines — ideal, focused change", total),
+        _ => unreachable!(),
+    };
+
+    CriterionScore {
+        criterion_id: CriterionId::ScopeAppropriateness,
+        level,
+        weighted_score: level as f32 * weight,
+        rationale,
+        evidence: vec![
+            format!("{} lines added", stats.lines_added),
+            format!("{} lines removed", stats.lines_removed),
+            format!("{} files changed", stats.files_changed),
+        ],
+        suggestions: Vec::new(),
+    }
+}
+
 /// Errors that can occur during assessment.
 #[derive(Debug, thiserror::Error)]
 pub enum AssessmentError {
@@ -148,11 +208,10 @@ pub enum AssessmentError {
 /// Get the definition for a criterion by ID.
 pub fn get_definition(id: CriterionId) -> CriterionDefinition {
     match id {
-        CriterionId::Atomicity => atomicity::definition(),
+        CriterionId::Coherence => coherence::definition(),
         CriterionId::MessageQuality => message::definition(),
-        CriterionId::LogicalCohesion => cohesion::definition(),
+        CriterionId::SelfContainment => self_containment::definition(),
         CriterionId::ScopeAppropriateness => scope::definition(),
-        CriterionId::Reversibility => reversibility::definition(),
     }
 }
 
@@ -162,28 +221,114 @@ mod tests {
 
     #[test]
     fn criterion_id_display() {
-        assert_eq!(CriterionId::Atomicity.to_string(), "atomicity");
+        assert_eq!(CriterionId::Coherence.to_string(), "coherence");
         assert_eq!(CriterionId::MessageQuality.to_string(), "message_quality");
+        assert_eq!(
+            CriterionId::SelfContainment.to_string(),
+            "self_containment"
+        );
     }
 
     #[test]
     fn criterion_id_parse() {
         assert_eq!(
-            "atomicity".parse::<CriterionId>().unwrap(),
-            CriterionId::Atomicity
+            "coherence".parse::<CriterionId>().unwrap(),
+            CriterionId::Coherence
         );
         assert_eq!(
             "message".parse::<CriterionId>().unwrap(),
             CriterionId::MessageQuality
         );
         assert_eq!(
+            "self_containment".parse::<CriterionId>().unwrap(),
+            CriterionId::SelfContainment
+        );
+    }
+
+    #[test]
+    fn backward_compat_aliases() {
+        assert_eq!(
+            "atomicity".parse::<CriterionId>().unwrap(),
+            CriterionId::Coherence
+        );
+        assert_eq!(
             "cohesion".parse::<CriterionId>().unwrap(),
-            CriterionId::LogicalCohesion
+            CriterionId::Coherence
+        );
+        assert_eq!(
+            "logical_cohesion".parse::<CriterionId>().unwrap(),
+            CriterionId::Coherence
+        );
+        assert_eq!(
+            "reversibility".parse::<CriterionId>().unwrap(),
+            CriterionId::SelfContainment
         );
     }
 
     #[test]
     fn all_criteria() {
-        assert_eq!(CriterionId::all().len(), 5);
+        assert_eq!(CriterionId::all().len(), 4);
+    }
+
+    #[test]
+    fn llm_assessed_excludes_scope() {
+        let llm = CriterionId::llm_assessed();
+        assert_eq!(llm.len(), 3);
+        assert!(!llm.contains(&CriterionId::ScopeAppropriateness));
+    }
+
+    #[test]
+    fn compute_scope_ideal() {
+        let stats = DiffStats {
+            lines_added: 10,
+            lines_removed: 5,
+            files_changed: 2,
+        };
+        let score = compute_scope_score(&stats);
+        assert_eq!(score.level, 5);
+    }
+
+    #[test]
+    fn compute_scope_good() {
+        let stats = DiffStats {
+            lines_added: 100,
+            lines_removed: 50,
+            files_changed: 4,
+        };
+        let score = compute_scope_score(&stats);
+        assert_eq!(score.level, 4);
+    }
+
+    #[test]
+    fn compute_scope_too_large() {
+        let stats = DiffStats {
+            lines_added: 500,
+            lines_removed: 400,
+            files_changed: 15,
+        };
+        let score = compute_scope_score(&stats);
+        assert_eq!(score.level, 1);
+    }
+
+    #[test]
+    fn compute_scope_empty() {
+        let stats = DiffStats {
+            lines_added: 0,
+            lines_removed: 0,
+            files_changed: 0,
+        };
+        let score = compute_scope_score(&stats);
+        assert_eq!(score.level, 1);
+    }
+
+    #[test]
+    fn compute_scope_many_files_cap() {
+        let stats = DiffStats {
+            lines_added: 150,
+            lines_removed: 100,
+            files_changed: 25,
+        };
+        let score = compute_scope_score(&stats);
+        assert_eq!(score.level, 2); // capped due to files > 20 && total > 200
     }
 }
