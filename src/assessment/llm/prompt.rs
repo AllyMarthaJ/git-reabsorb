@@ -1,6 +1,6 @@
 //! Prompt construction for LLM-based commit assessment.
 
-use crate::assessment::criteria::{CriterionDefinition, RangeContext};
+use crate::assessment::criteria::{CriterionDefinition, DiffStats, RangeContext};
 use crate::models::SourceCommit;
 
 /// Builds a batched assessment prompt for all criteria at once.
@@ -8,13 +8,17 @@ pub fn build_assessment_prompt(
     definitions: &[CriterionDefinition],
     commit: &SourceCommit,
     diff_content: &str,
+    diff_stats: &DiffStats,
     range_context: &RangeContext,
     max_context_commits: usize,
 ) -> String {
     let mut prompt = String::new();
 
     prompt.push_str(
-        "You are assessing a git commit for quality across multiple criteria.\n\n## Criteria\n\n",
+        "You are assessing a git commit for quality across multiple criteria.\n\n\
+         Note: Criteria have different weights reflecting their relative importance.\n\
+         Higher-weight criteria should be assessed more carefully.\n\n\
+         ## Criteria\n\n",
     );
 
     // Compact rubric: one line per level
@@ -49,12 +53,22 @@ pub fn build_assessment_prompt(
 {}
 ```
 
+## Diff Statistics
+- Lines added: {}
+- Lines removed: {}
+- Total lines changed: {}
+- Files changed: {}
+
 "#,
         short_sha,
         commit.message.long,
         range_context.position + 1,
         range_context.commits.len(),
-        truncate_diff(diff_content, 3000)
+        truncate_diff(diff_content, 3000),
+        diff_stats.lines_added,
+        diff_stats.lines_removed,
+        diff_stats.total_lines(),
+        diff_stats.files_changed,
     ));
 
     // Range context with capping
@@ -197,12 +211,12 @@ fn truncate_diff(diff: &str, max_chars: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assessment::criteria::atomicity;
+    use crate::assessment::criteria::coherence;
     use crate::models::SourceCommit;
 
     #[test]
     fn builds_complete_prompt() {
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
         let commit = SourceCommit::new(
             "abc123def",
             "Add feature",
@@ -210,16 +224,24 @@ mod tests {
         );
         let context = RangeContext::new(vec![commit.clone()], 0);
         let diff = "+fn new_function() {}";
+        let stats = DiffStats {
+            lines_added: 1,
+            lines_removed: 0,
+            files_changed: 1,
+        };
 
-        let prompt = build_assessment_prompt(&defs, &commit, diff, &context, 10);
+        let prompt = build_assessment_prompt(&defs, &commit, diff, &stats, &context, 10);
 
-        assert!(prompt.contains("Atomicity"));
+        assert!(prompt.contains("Coherence"));
         assert!(prompt.contains("abc123de"));
         assert!(prompt.contains("Add feature"));
         assert!(prompt.contains("+fn new_function"));
         assert!(prompt.contains("Level 1"));
         assert!(prompt.contains("Level 5"));
-        assert!(prompt.contains("\"criterion\": \"atomicity\""));
+        assert!(prompt.contains("\"criterion\": \"coherence\""));
+        assert!(prompt.contains("Lines added: 1"));
+        assert!(prompt.contains("Files changed: 1"));
+        assert!(prompt.contains("Higher-weight criteria"));
     }
 
     #[test]
@@ -289,11 +311,22 @@ mod tests {
         let commits: Vec<SourceCommit> = (0..20)
             .map(|i| SourceCommit::new(format!("sha{:02}abc", i), format!("Commit {}", i), ""))
             .collect();
-        let defs = vec![atomicity::definition()];
+        let defs = vec![coherence::definition()];
         let context = RangeContext::new(commits, 10);
+        let stats = DiffStats {
+            lines_added: 5,
+            lines_removed: 2,
+            files_changed: 1,
+        };
 
-        let prompt =
-            build_assessment_prompt(&defs, &context.commits[10].clone(), "+code", &context, 4);
+        let prompt = build_assessment_prompt(
+            &defs,
+            &context.commits[10].clone(),
+            "+code",
+            &stats,
+            &context,
+            4,
+        );
 
         assert!(prompt.contains("more commits not shown"));
         assert!(prompt.contains("sha00abc")); // first sha in range note
