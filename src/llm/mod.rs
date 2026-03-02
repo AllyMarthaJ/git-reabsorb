@@ -27,6 +27,8 @@ pub enum LlmProvider {
     Claude,
     /// OpenCode CLI
     OpenCode,
+    /// Gemini CLI
+    Gemini,
 }
 
 impl std::fmt::Display for LlmProvider {
@@ -34,6 +36,7 @@ impl std::fmt::Display for LlmProvider {
         match self {
             Self::Claude => write!(f, "claude"),
             Self::OpenCode => write!(f, "opencode"),
+            Self::Gemini => write!(f, "gemini"),
         }
     }
 }
@@ -45,8 +48,9 @@ impl std::str::FromStr for LlmProvider {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
             "opencode" => Ok(Self::OpenCode),
+            "gemini" => Ok(Self::Gemini),
             _ => Err(format!(
-                "Unknown LLM provider: '{}'. Valid options: claude, opencode",
+                "Unknown LLM provider: '{}'. Valid options: claude, opencode, gemini",
                 s
             )),
         }
@@ -79,6 +83,13 @@ impl ToolCapability {
             Self::FileIo => &["read", "write", "edit"],
         }
     }
+
+    /// Convert to Gemini CLI tool names.
+    pub fn to_gemini_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::FileIo => &["read_file", "write_file", "edit_file"],
+        }
+    }
 }
 
 /// Convert a slice of capabilities to tool names for a specific provider.
@@ -88,6 +99,7 @@ fn capabilities_to_tools(capabilities: &[ToolCapability], provider: LlmProvider)
         .flat_map(|cap| match provider {
             LlmProvider::Claude => cap.to_claude_tools().iter().copied(),
             LlmProvider::OpenCode => cap.to_opencode_tools().iter().copied(),
+            LlmProvider::Gemini => cap.to_gemini_tools().iter().copied(),
         })
         .map(String::from)
         .collect()
@@ -198,6 +210,9 @@ impl LlmConfig {
                 backend: self.opencode_backend.clone(),
                 allowed_tools,
             }),
+            LlmProvider::Gemini => Arc::new(GeminiCliClient {
+                model: self.model.clone(),
+            }),
         }
     }
 
@@ -213,6 +228,9 @@ impl LlmConfig {
                 model: self.model.clone(),
                 backend: self.opencode_backend.clone(),
                 allowed_tools,
+            }),
+            LlmProvider::Gemini => Box::new(GeminiCliClient {
+                model: self.model.clone(),
             }),
         }
     }
@@ -516,6 +534,78 @@ impl LlmClient for OpenCodeClient {
     }
 }
 
+/// Gemini CLI client implementation.
+pub struct GeminiCliClient {
+    pub model: Option<String>,
+}
+
+impl GeminiCliClient {
+    pub fn new() -> Self {
+        Self { model: None }
+    }
+}
+
+impl Default for GeminiCliClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LlmClient for GeminiCliClient {
+    fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        trace!("[gemini prompt] -------- START --------");
+        for line in prompt.lines() {
+            trace!("[gemini prompt] {}", line);
+        }
+        trace!("[gemini prompt] -------- END --------");
+
+        // gemini [-m model] reads prompt from stdin
+        let mut args: Vec<String> = Vec::new();
+
+        if let Some(ref model) = self.model {
+            args.push("-m".to_string());
+            args.push(model.clone());
+        }
+
+        let mut child = Command::new("gemini")
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| LlmError::ClientError(format!("Failed to run gemini CLI: {}", e)))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .map_err(|e| LlmError::ClientError(format!("Failed to write to stdin: {}", e)))?;
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            LlmError::ClientError(format!("Failed to wait for gemini CLI: {}", e))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(LlmError::ClientError(format!(
+                "gemini CLI failed: stderr={} stdout={}",
+                stderr.trim(),
+                stdout.trim()
+            )));
+        }
+
+        let response = String::from_utf8_lossy(&output.stdout).to_string();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            debug!("Gemini CLI stderr: {}", stderr.trim());
+        }
+
+        Ok(response)
+    }
+}
+
 /// Errors from LLM operations.
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -588,6 +678,10 @@ mod tests {
         assert_eq!(
             "opencode".parse::<LlmProvider>().unwrap(),
             LlmProvider::OpenCode
+        );
+        assert_eq!(
+            "gemini".parse::<LlmProvider>().unwrap(),
+            LlmProvider::Gemini
         );
         assert_eq!(
             "CLAUDE".parse::<LlmProvider>().unwrap(),

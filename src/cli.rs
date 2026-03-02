@@ -144,7 +144,7 @@ pub struct Cli {
 /// Global LLM configuration options.
 #[derive(Args, Debug, Clone, Default)]
 pub struct LlmArgs {
-    /// LLM provider to use (claude, opencode)
+    /// LLM provider to use (claude, opencode, gemini)
     /// Can also be set via GIT_REABSORB_LLM_PROVIDER env var
     #[arg(
         long = "llm-provider",
