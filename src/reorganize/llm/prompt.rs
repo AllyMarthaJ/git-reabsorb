@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::assessment::criteria::message;
 use crate::models::{Hunk, SourceCommit};
 use crate::utils::format_diff_lines;
 
@@ -36,7 +37,7 @@ pub fn build_context(source_commits: &[SourceCommit], hunks: &[Hunk]) -> LlmCont
 pub fn build_prompt(context: &LlmContext) -> String {
     let mut prompt = String::new();
 
-    prompt.push_str(
+    prompt.push_str(&format!(
         r#"You are a git commit reorganizer. Your task is to analyze a set of code changes (hunks)
 and reorganize them into logical, well-structured commits.
 
@@ -51,46 +52,46 @@ You will receive:
 You must output a JSON object with the following structure:
 
 ```json
-{
+{{
   "commits": [
-    {
+    {{
       "short_description": "Brief commit message (50 chars or less)",
       "long_description": "Detailed commit message explaining the change",
       "changes": [
-        {"type": "hunk", "id": 0},
-        {"type": "hunk", "id": 1}
+        {{"type": "hunk", "id": 0}},
+        {{"type": "hunk", "id": 1}}
       ]
-    }
+    }}
   ]
-}
+}}
 ```
 
 ## Change Types
 
 Each change in a commit can be one of:
 
-1. `{"type": "hunk", "id": N}` - Include the entire hunk with ID N
-2. `{"type": "partial", "hunk_id": N, "lines": [1, 2, 3]}` - Include only specific lines from hunk N (1-indexed)
-3. `{"type": "raw", "file_path": "path/to/file", "diff": "+new line\n-old line"}` - Raw diff content
+1. `{{"type": "hunk", "id": N}}` - Include the entire hunk with ID N
+2. `{{"type": "partial", "hunk_id": N, "lines": [1, 2, 3]}}` - Include only specific lines from hunk N (1-indexed)
+3. `{{"type": "raw", "file_path": "path/to/file", "diff": "+new line\n-old line"}}` - Raw diff content
+
+## Commit Message Quality
+
+{guidelines}
 
 ## Guidelines
 
-0. You should ALWAYS emphasise WHY a change was made, if that information was available.
-   The short description should contain a concise summary, and the long description
-   should elaborate on the reasoning. Avoid generic messages and short descriptions beginning
-   with "Add", "Fix", "Update", etc. without context.
 1. Group related changes together into logical commits
 2. Each commit should represent a single logical change (feature, fix, refactor, etc.)
-3. Write clear, descriptive commit messages
-4. Consider file relationships and dependencies when grouping
-5. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
-6. You may split hunks using "partial" if a hunk contains unrelated changes
-7. Preserve the semantic meaning of changes - don't break functionality
+3. Consider file relationships and dependencies when grouping
+4. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
+5. You may split hunks using "partial" if a hunk contains unrelated changes
+6. Preserve the semantic meaning of changes - don't break functionality
 
 ## Original Commits (for context)
 
 "#,
-    );
+        guidelines = message::guidelines(),
+    ));
 
     for commit in &context.source_commits {
         prompt.push_str(&format!(
@@ -186,7 +187,7 @@ pub fn build_hunks_file_content(context: &LlmContext) -> String {
 pub fn build_file_based_prompt(context: &LlmContext, input_file_path: &Path) -> String {
     let mut prompt = String::new();
 
-    prompt.push_str(
+    prompt.push_str(&format!(
         r#"You are a git commit reorganizer. Your task is to analyze a set of code changes (hunks)
 and reorganize them into logical, well-structured commits.
 
@@ -205,46 +206,46 @@ You must:
 The JSON file should contain:
 
 ```json
-{
+{{
   "commits": [
-    {
+    {{
       "short_description": "Brief commit message (50 chars or less)",
       "long_description": "Detailed commit message explaining the change",
       "changes": [
-        {"type": "hunk", "id": 0},
-        {"type": "hunk", "id": 1}
+        {{"type": "hunk", "id": 0}},
+        {{"type": "hunk", "id": 1}}
       ]
-    }
+    }}
   ]
-}
+}}
 ```
 
 ## Change Types
 
 Each change in a commit can be one of:
 
-1. `{"type": "hunk", "id": N}` - Include the entire hunk with ID N
-2. `{"type": "partial", "hunk_id": N, "lines": [1, 2, 3]}` - Include only specific lines from hunk N (1-indexed)
-3. `{"type": "raw", "file_path": "path/to/file", "diff": "+new line\n-old line"}` - Raw diff content
+1. `{{"type": "hunk", "id": N}}` - Include the entire hunk with ID N
+2. `{{"type": "partial", "hunk_id": N, "lines": [1, 2, 3]}}` - Include only specific lines from hunk N (1-indexed)
+3. `{{"type": "raw", "file_path": "path/to/file", "diff": "+new line\n-old line"}}` - Raw diff content
+
+## Commit Message Quality
+
+{guidelines}
 
 ## Guidelines
 
-0. You should ALWAYS emphasise WHY a change was made, if that information was available.
-   The short description should contain a concise summary, and the long description
-   should elaborate on the reasoning. Avoid generic messages and short descriptions beginning
-   with "Add", "Fix", "Update", etc. without context.
 1. Group related changes together into logical commits
 2. Each commit should represent a single logical change (feature, fix, refactor, etc.)
-3. Write clear, descriptive commit messages
-4. Consider file relationships and dependencies when grouping
-5. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
-6. You may split hunks using "partial" if a hunk contains unrelated changes
-7. Preserve the semantic meaning of changes - don't break functionality
+3. Consider file relationships and dependencies when grouping
+4. All hunks must be assigned to exactly one commit (no duplicates, no omissions)
+5. You may split hunks using "partial" if a hunk contains unrelated changes
+6. Preserve the semantic meaning of changes - don't break functionality
 
 ## Original Commits (for context)
 
 "#,
-    );
+        guidelines = message::guidelines(),
+    ));
 
     for commit in &context.source_commits {
         prompt.push_str(&format!(
@@ -573,32 +574,32 @@ quality assessment feedback.
         }
     }
 
-    prompt.push_str(
+    prompt.push_str(&format!(
         r#"## Your Task
 
-Rewrite the commit message to address the assessment feedback. The improved message should:
+Rewrite the commit message to address the assessment feedback.
 
-1. Be clear and descriptive (short message ≤ 50 chars)
-2. Explain WHY the change was made, not just WHAT changed
-3. Provide context for reviewers and future maintainers
-4. Address any specific suggestions from the assessment
+{guidelines}
+
+Also address any specific suggestions from the assessment.
 
 Output a JSON object with the improved message:
 
 ```json
-{
-  "description": {
+{{
+  "description": {{
     "short": "Brief commit message (50 chars or less)",
     "long": "Detailed commit message explaining the motivation and context"
-  }
-}
+  }}
+}}
 ```
 
 Output ONLY the JSON.
 
 ```json
 "#,
-    );
+        guidelines = message::guidelines(),
+    ));
 
     prompt
 }
@@ -659,32 +660,32 @@ quality assessment feedback.
     prompt.push_str(diff_content);
     prompt.push_str("\n```\n\n");
 
-    prompt.push_str(
+    prompt.push_str(&format!(
         r#"## Your Task
 
-Rewrite the commit message to address the assessment feedback. The improved message should:
+Rewrite the commit message to address the assessment feedback.
 
-1. Be clear and descriptive (short message ≤ 50 chars)
-2. Explain WHY the change was made, not just WHAT changed
-3. Provide context for reviewers and future maintainers
-4. Address any specific suggestions from the assessment
+{guidelines}
+
+Also address any specific suggestions from the assessment.
 
 Output a JSON object with the improved message:
 
 ```json
-{
-  "description": {
+{{
+  "description": {{
     "short": "Brief commit message (50 chars or less)",
     "long": "Detailed commit message explaining the motivation and context"
-  }
-}
+  }}
+}}
 ```
 
 Output ONLY the JSON.
 
 ```json
 "#,
-    );
+        guidelines = message::guidelines(),
+    ));
 
     prompt
 }
