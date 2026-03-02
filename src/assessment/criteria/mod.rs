@@ -136,7 +136,7 @@ impl RangeContext {
 }
 
 /// Diff statistics for deterministic scope scoring.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiffStats {
     pub lines_added: usize,
     pub lines_removed: usize,

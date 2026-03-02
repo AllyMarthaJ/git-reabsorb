@@ -194,12 +194,13 @@ fn select_context_commits(
 }
 
 /// Truncate diff content to avoid exceeding token limits.
-fn truncate_diff(diff: &str, max_chars: usize) -> &str {
-    if diff.len() <= max_chars {
+fn truncate_diff(diff: &str, max_bytes: usize) -> &str {
+    if diff.len() <= max_bytes {
         diff
     } else {
-        // Try to truncate at a line boundary
-        let truncated = &diff[..max_chars];
+        // Find a valid char boundary, then try to truncate at a line boundary
+        let safe = diff.floor_char_boundary(max_bytes);
+        let truncated = &diff[..safe];
         if let Some(last_newline) = truncated.rfind('\n') {
             &diff[..last_newline]
         } else {
@@ -249,6 +250,16 @@ mod tests {
         let long_diff = "x".repeat(5000);
         let truncated = truncate_diff(&long_diff, 100);
         assert!(truncated.len() <= 100);
+    }
+
+    #[test]
+    fn truncates_at_multibyte_char_boundary() {
+        // '…' is 3 bytes (U+2026). Place it so byte index 10 lands inside it.
+        let diff = format!("12345678{}\nrest", '…'); // bytes: 8 + 3 + 1 + 4 = 16
+        // Truncating at 10 bytes would land inside '…' (bytes 8..11)
+        let truncated = truncate_diff(&diff, 10);
+        assert!(truncated.len() <= 10);
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 
     #[test]

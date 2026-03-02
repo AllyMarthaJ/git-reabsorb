@@ -178,7 +178,7 @@ pub enum Command {
     Reset,
     /// Show status of current plan (for debugging)
     Status,
-    /// Assess commit quality in a range
+    /// Assess commit quality, extract commits, or export training data
     Assess(AssessArgs),
     /// Compare two saved assessments
     Compare(CompareArgs),
@@ -237,11 +237,21 @@ pub struct ApplyArgs {
 pub struct AssessArgs {
     /// Commit range to assess (default: auto-detect branch base..HEAD)
     /// Examples: main..HEAD, HEAD~5..HEAD, abc123..def456, or just 'main' (implies main..HEAD)
-    #[arg(value_name = "RANGE")]
+    #[arg(value_name = "RANGE", conflicts_with = "from_file")]
     pub range: Option<CommitRange>,
 
-    /// Base branch to assess from
+    /// Assess commits from a pre-extracted NDJSON file instead of a git range.
+    /// Each line should be a JSON object with at least: hash, subject, body, diff.
+    /// Defaults to message_quality criterion only.
+    #[arg(long)]
+    pub from_file: Option<PathBuf>,
+
+    /// Output file for labeled NDJSON (used with --from-file). Resumable: skips already-labeled hashes.
     #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Base branch to assess from
+    #[arg(short, long, conflicts_with = "from_file")]
     pub base: Option<String>,
 
     /// Criteria to assess (default: all)
@@ -268,6 +278,17 @@ pub struct AssessArgs {
     /// Maximum parallel commit assessments (default: 4)
     #[arg(short = 'j', long, default_value = "4")]
     pub parallel: usize,
+
+    #[command(subcommand)]
+    pub subcommand: Option<AssessCommand>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum AssessCommand {
+    /// Extract commits with diffs to NDJSON
+    Extract(ExtractArgs),
+    /// Export labeled assessment data as training data
+    Export(ExportTrainingDataArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -299,6 +320,62 @@ pub struct RewordArgs {
     /// Show changes without applying
     #[arg(short = 'n', long)]
     pub dry_run: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExtractArgs {
+    /// Commit range to extract
+    /// Examples: main..HEAD, HEAD~20..HEAD, abc123..def456
+    #[arg(value_name = "RANGE")]
+    pub range: Option<CommitRange>,
+
+    /// Base branch to extract from
+    #[arg(short, long)]
+    pub base: Option<String>,
+
+    /// Output file (default: stdout). Use .ndjson extension for newline-delimited JSON.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Maximum diff size in bytes before truncation (default: 50000)
+    #[arg(long, default_value = "50000")]
+    pub max_diff_size: usize,
+
+    /// Skip commits touching more than this many files (default: 50)
+    #[arg(long, default_value = "50")]
+    pub max_files: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExportTrainingDataArgs {
+    /// Labeled NDJSON file (output of `assess --from-file`)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Training data format to produce
+    #[arg(long, value_enum, default_value = "all")]
+    pub format: TrainingDataFormat,
+
+    /// Output directory (default: training_data/)
+    #[arg(long, default_value = "training_data")]
+    pub output_dir: PathBuf,
+
+    /// Minimum quality level for SFT examples (default: 4)
+    #[arg(long, default_value = "4")]
+    pub min_level: u8,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Default)]
+pub enum TrainingDataFormat {
+    /// Supervised fine-tuning: (diff -> good message) pairs
+    Sft,
+    /// Direct preference optimization: (diff, chosen, rejected) triples
+    Dpo,
+    /// Assessment: (diff + message -> score + rationale)
+    Assessment,
+    /// All formats
+    #[default]
+    All,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, Default)]

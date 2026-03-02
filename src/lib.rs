@@ -3,6 +3,8 @@ pub mod assessment;
 pub mod cancel;
 pub mod cli;
 pub mod editor;
+pub mod export;
+pub mod extract;
 pub mod features;
 pub mod git;
 pub mod llm;
