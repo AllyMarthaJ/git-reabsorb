@@ -69,6 +69,8 @@ pub struct CommitAssessment {
 }
 
 /// Aggregate statistics for a criterion across the range.
+///
+/// Scores are weighted (level * criterion weight), not raw levels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateScore {
     pub criterion_id: CriterionId,
@@ -131,7 +133,7 @@ mod tests {
     #[test]
     fn criterion_score_serialization() {
         let score = CriterionScore {
-            criterion_id: CriterionId::Atomicity,
+            criterion_id: CriterionId::Coherence,
             level: 4,
             weighted_score: 4.0,
             rationale: "Single logical change".to_string(),
@@ -142,6 +144,6 @@ mod tests {
         let json = serde_json::to_string(&score).unwrap();
         let restored: CriterionScore = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.level, 4);
-        assert_eq!(restored.criterion_id, CriterionId::Atomicity);
+        assert_eq!(restored.criterion_id, CriterionId::Coherence);
     }
 }
