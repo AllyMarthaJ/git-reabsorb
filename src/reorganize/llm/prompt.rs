@@ -55,8 +55,8 @@ You must output a JSON object with the following structure:
 {{
   "commits": [
     {{
-      "short_description": "Brief commit message (50 chars or less)",
-      "long_description": "Detailed commit message explaining the change",
+      "short_description": "≤50 chars, single line, no trailing period — system + action + scope",
+      "long_description": "Short body. Lead with the concrete gap that existed before this change, then what's now possible, then any non-obvious trade-off. Do NOT enumerate added identifiers (tag/field/function/file names) — that's the diff in prose. See guidance below.",
       "changes": [
         {{"type": "hunk", "id": 0}},
         {{"type": "hunk", "id": 1}}
@@ -209,8 +209,8 @@ The JSON file should contain:
 {{
   "commits": [
     {{
-      "short_description": "Brief commit message (50 chars or less)",
-      "long_description": "Detailed commit message explaining the change",
+      "short_description": "≤50 chars, single line, no trailing period — system + action + scope",
+      "long_description": "Short body. Lead with the concrete gap that existed before this change, then what's now possible, then any non-obvious trade-off. Do NOT enumerate added identifiers (tag/field/function/file names) — that's the diff in prose. See guidance below.",
       "changes": [
         {{"type": "hunk", "id": 0}},
         {{"type": "hunk", "id": 1}}
@@ -345,7 +345,7 @@ Output a JSON object with the assignments:
 {
   "assignments": [
     {"hunk_id": N, "action": "add_to_existing", "commit_description": "existing commit short description"},
-    {"hunk_id": M, "action": "new_commit", "short_description": "New commit message", "long_description": "Details"}
+    {"hunk_id": M, "action": "new_commit", "short_description": "≤50 chars, single line — system + action + scope", "long_description": "Short body — motivation, not a diff walkthrough"}
   ]
 }
 ```
@@ -588,8 +588,8 @@ Output a JSON object with the improved message:
 ```json
 {{
   "description": {{
-    "short": "Brief commit message (50 chars or less)",
-    "long": "Detailed commit message explaining the motivation and context"
+    "short": "≤50 chars, single line, no trailing period — system + action + scope",
+    "long": "Short body. Lead with the concrete gap that existed before this change, then what's now possible, then any non-obvious trade-off. Do NOT enumerate added identifiers (tag/field/function/file names) — that's the diff in prose. See guidance below."
   }}
 }}
 ```
@@ -674,8 +674,8 @@ Output a JSON object with the improved message:
 ```json
 {{
   "description": {{
-    "short": "Brief commit message (50 chars or less)",
-    "long": "Detailed commit message explaining the motivation and context"
+    "short": "≤50 chars, single line, no trailing period — system + action + scope",
+    "long": "Short body. Lead with the concrete gap that existed before this change, then what's now possible, then any non-obvious trade-off. Do NOT enumerate added identifiers (tag/field/function/file names) — that's the diff in prose. See guidance below."
   }}
 }}
 ```

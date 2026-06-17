@@ -288,7 +288,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             short_sha(range.head())
         );
 
-        let planner = Planner::new(&self.git, self.strategies.clone());
+        let planner = Planner::new(&self.git, self.strategies.clone())
+            .with_llm_client(self.llm_config.create_client());
         let source_commits = planner.read_source_commits(&range.base, range.head())?;
         info!("Found {} commits", source_commits.len());
 

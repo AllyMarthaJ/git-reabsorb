@@ -24,6 +24,11 @@ pub enum Feature {
     /// Use file-based I/O for LLM prompts to reduce token usage and handle larger patches.
     /// Writes hunks to a temp file and instructs LLM to read from it.
     FileBasedLlmIo,
+    /// Run MessageQuality assessment on each PlannedCommit during validation.
+    /// Below-threshold commits emit `FailedAssessment` issues, which the existing
+    /// `fix_plan` branch repairs via `build_fix_message_prompt`. Requires
+    /// `AttemptValidationFix` to actually take effect.
+    AssessPlannedCommits,
 }
 
 impl Feature {
