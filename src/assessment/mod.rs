@@ -10,7 +10,7 @@ pub mod report;
 pub mod types;
 
 pub use comparison::{compare_assessments, load_assessment, save_assessment};
-pub use criteria::{AssessmentError, CriterionId, RangeContext};
+pub use criteria::{AssessmentError, CriterionId, DiffStats, RangeContext};
 pub use types::{
     AggregateScore, AssessmentComparison, AssessmentLevel, CommitAssessment, CriterionScore,
     RangeAssessment,
@@ -22,11 +22,12 @@ use std::thread;
 
 use log::{debug, error, info};
 
+use crate::extract::ExtractedCommit;
 use crate::git::GitOps;
 use crate::llm::LlmClient;
 use crate::models::SourceCommit;
 
-use criteria::get_definition;
+use criteria::{compute_scope_score, get_definition};
 use llm::LlmAssessor;
 
 /// Main assessment engine for evaluating commit quality.
@@ -65,7 +66,22 @@ impl AssessmentEngine {
         self
     }
 
-    /// Assess a range of commits in parallel.
+    /// Criterion IDs that should be assessed by the LLM (excludes deterministic ones).
+    fn llm_criterion_ids(&self) -> Vec<CriterionId> {
+        self.criterion_ids
+            .iter()
+            .filter(|id| **id != CriterionId::ScopeAppropriateness)
+            .copied()
+            .collect()
+    }
+
+    /// Whether scope should be computed deterministically.
+    fn includes_scope(&self) -> bool {
+        self.criterion_ids
+            .contains(&CriterionId::ScopeAppropriateness)
+    }
+
+    /// Assess a range of commits by fetching data from git first.
     pub fn assess_range<G: GitOps>(
         &self,
         git: &G,
@@ -73,98 +89,37 @@ impl AssessmentEngine {
         head_sha: &str,
         commits: &[SourceCommit],
     ) -> Result<RangeAssessment, AssessmentError> {
-        let total = commits.len();
+        // Pre-fetch all diffs and build ExtractedCommit records
+        info!("Fetching diffs for {} commits...", commits.len());
+        let mut extracted: Vec<ExtractedCommit> = Vec::new();
+        for commit in commits {
+            let (diff_content, diff_stats) = self.get_diff_content_and_stats(git, &commit.sha)?;
+            let files_changed = git
+                .get_files_changed_in_commit(&commit.sha)
+                .unwrap_or_default();
 
-        // Collect all files changed in the range for context
-        let files_in_range = self.collect_files_in_range(git, commits);
+            let body = if commit.message.long.len() > commit.message.short.len() {
+                commit.message.long[commit.message.short.len()..]
+                    .trim()
+                    .to_string()
+            } else {
+                String::new()
+            };
 
-        // Pre-fetch all diffs (git operations are fast, do sequentially)
-        info!("Fetching diffs for {} commits...", total);
-        let mut commit_data: Vec<(usize, SourceCommit, String)> = Vec::new();
-        for (position, commit) in commits.iter().enumerate() {
-            let diff_content = self.get_diff_content(git, &commit.sha)?;
-            commit_data.push((position, commit.clone(), diff_content));
+            extracted.push(ExtractedCommit {
+                hash: commit.sha.clone(),
+                subject: commit.message.short.clone(),
+                body,
+                author_name: String::new(),
+                author_date: String::new(),
+                diff: diff_content,
+                diff_stat: diff_stats,
+                files_changed,
+                diff_truncated: false,
+            });
         }
 
-        // Create a shared assessor for all threads
-        let assessor = Arc::new(LlmAssessor::new(
-            Arc::clone(&self.client),
-            &self.criterion_ids,
-            self.max_context_commits,
-        ));
-
-        // Assess commits in parallel batches
-        info!(
-            "Assessing {} commits ({} parallel)...",
-            total, self.max_parallel
-        );
-
-        let results: Arc<Mutex<Vec<CommitAssessment>>> = Arc::new(Mutex::new(Vec::new()));
-        let errors: Arc<Mutex<Vec<(usize, AssessmentError)>>> = Arc::new(Mutex::new(Vec::new()));
-
-        let chunks: Vec<_> = commit_data.chunks(self.max_parallel).collect();
-
-        for chunk in chunks {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|(position, commit, diff_content)| {
-                    let assessor = Arc::clone(&assessor);
-                    let results = Arc::clone(&results);
-                    let errors = Arc::clone(&errors);
-                    let commits_clone = commits.to_vec();
-                    let files_clone = files_in_range.clone();
-                    let position = *position;
-                    let commit = commit.clone();
-                    let diff_content = diff_content.clone();
-
-                    thread::spawn(move || {
-                        debug!(
-                            "[{}/{}] {} {}",
-                            position + 1,
-                            total,
-                            &commit.sha[..8.min(commit.sha.len())],
-                            commit.message.short
-                        );
-
-                        let range_context =
-                            RangeContext::new(commits_clone, position).with_files(files_clone);
-
-                        match assessor.assess_commit(
-                            &commit,
-                            &diff_content,
-                            &range_context,
-                            position,
-                            total,
-                        ) {
-                            Ok(assessment) => {
-                                let mut results = results.lock().unwrap();
-                                results.push(assessment);
-                            }
-                            Err(e) => {
-                                let mut errors = errors.lock().unwrap();
-                                errors.push((position, e));
-                            }
-                        }
-                    })
-                })
-                .collect();
-
-            // Wait for this batch to complete
-            for handle in handles {
-                let _ = handle.join();
-            }
-        }
-
-        // Check for errors
-        let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
-        if let Some((position, error)) = errors.into_iter().next() {
-            error!("Assessment failed at commit {}", position);
-            return Err(error);
-        }
-
-        // Sort results by position (they may be out of order due to parallelism)
-        let mut commit_assessments = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
-        commit_assessments.sort_by_key(|ca| ca.position);
+        let commit_assessments = self.assess_commits(&extracted)?;
 
         let aggregate_scores = self.calculate_aggregates(&commit_assessments);
         let overall_score = if commit_assessments.is_empty() {
@@ -188,33 +143,195 @@ impl AssessmentEngine {
         })
     }
 
-    fn get_diff_content<G: GitOps>(&self, git: &G, sha: &str) -> Result<String, AssessmentError> {
+    /// Assess a set of extracted commits in parallel.
+    ///
+    /// This is the core assessment method — both git-backed (`assess_range`) and
+    /// file-backed (`--from-file`) modes funnel through here.
+    pub fn assess_commits(
+        &self,
+        commits: &[ExtractedCommit],
+    ) -> Result<Vec<CommitAssessment>, AssessmentError> {
+        let total = commits.len();
+
+        // Build SourceCommit list for range context
+        let source_commits: Vec<SourceCommit> = commits
+            .iter()
+            .map(|c| {
+                let long = if c.body.is_empty() {
+                    c.subject.clone()
+                } else {
+                    format!("{}\n\n{}", c.subject, c.body)
+                };
+                SourceCommit::new(&c.hash, &c.subject, long)
+            })
+            .collect();
+
+        // Collect all files for range context
+        let files_in_range: Vec<String> = {
+            let mut files = Vec::new();
+            for c in commits {
+                for f in &c.files_changed {
+                    if !files.contains(f) {
+                        files.push(f.clone());
+                    }
+                }
+            }
+            files
+        };
+
+        // Create assessor
+        let llm_ids = self.llm_criterion_ids();
+        let assessor = Arc::new(LlmAssessor::new(
+            Arc::clone(&self.client),
+            &llm_ids,
+            self.max_context_commits,
+        ));
+
+        let includes_scope = self.includes_scope();
+
+        info!(
+            "Assessing {} commits ({} parallel)...",
+            total, self.max_parallel
+        );
+
+        let results: Arc<Mutex<Vec<CommitAssessment>>> = Arc::new(Mutex::new(Vec::new()));
+        let errors: Arc<Mutex<Vec<(usize, AssessmentError)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let indexed: Vec<_> = commits.iter().enumerate().collect();
+        let chunks: Vec<_> = indexed.chunks(self.max_parallel).collect();
+
+        for chunk in chunks {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(position, commit)| {
+                    let assessor = Arc::clone(&assessor);
+                    let results = Arc::clone(&results);
+                    let errors = Arc::clone(&errors);
+                    let source_commits_clone = source_commits.clone();
+                    let files_clone = files_in_range.clone();
+                    let position = *position;
+                    let source_commit = source_commits[position].clone();
+                    let diff_content = commit.diff.clone();
+                    let diff_stats = commit.diff_stat.clone();
+
+                    thread::spawn(move || {
+                        debug!(
+                            "[{}/{}] {} {}",
+                            position + 1,
+                            total,
+                            &source_commit.sha[..8.min(source_commit.sha.len())],
+                            source_commit.message.short
+                        );
+
+                        let range_context = RangeContext::new(source_commits_clone, position)
+                            .with_files(files_clone);
+
+                        match assessor.assess_commit(
+                            &source_commit,
+                            &diff_content,
+                            &diff_stats,
+                            &range_context,
+                            position,
+                            total,
+                        ) {
+                            Ok(mut assessment) => {
+                                if includes_scope {
+                                    let scope_score = compute_scope_score(&diff_stats);
+                                    assessment.criterion_scores.push(scope_score);
+                                    let total_weighted: f32 = assessment
+                                        .criterion_scores
+                                        .iter()
+                                        .map(|s| s.weighted_score)
+                                        .sum();
+                                    let max_possible: f32 = assessment
+                                        .criterion_scores
+                                        .iter()
+                                        .map(|s| {
+                                            get_definition(s.criterion_id).max_weighted_score()
+                                        })
+                                        .sum();
+                                    assessment.overall_score = if max_possible > 0.0 {
+                                        total_weighted / max_possible
+                                    } else {
+                                        0.0
+                                    };
+                                }
+                                results.lock().unwrap().push(assessment);
+                            }
+                            Err(e) => {
+                                errors.lock().unwrap().push((position, e));
+                            }
+                        }
+                    })
+                })
+                .collect();
+
+            for handle in handles {
+                let _ = handle.join();
+            }
+        }
+
+        let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
+        if let Some((position, error)) = errors.into_iter().next() {
+            error!("Assessment failed at commit {}", position);
+            return Err(error);
+        }
+
+        let mut commit_assessments = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+        commit_assessments.sort_by_key(|ca| ca.position);
+
+        Ok(commit_assessments)
+    }
+
+    fn get_diff_content_and_stats<G: GitOps>(
+        &self,
+        git: &G,
+        sha: &str,
+    ) -> Result<(String, DiffStats), AssessmentError> {
         let hunks = git
             .read_hunks(sha, 0)
             .map_err(|e| AssessmentError::GitError(e.to_string()))?;
 
-        Ok(hunks
+        let diff_content = hunks
             .iter()
             .map(|h| h.to_patch())
             .collect::<Vec<_>>()
-            .join("\n"))
-    }
+            .join("\n");
 
-    fn collect_files_in_range<G: GitOps>(&self, git: &G, commits: &[SourceCommit]) -> Vec<String> {
-        let mut files = Vec::new();
-        for commit in commits {
-            if let Ok(changed) = git.get_files_changed_in_commit(&commit.sha) {
-                for file in changed {
-                    if !files.contains(&file) {
-                        files.push(file);
+        // Compute stats from hunks
+        let mut lines_added = 0usize;
+        let mut lines_removed = 0usize;
+        let mut files: Vec<String> = Vec::new();
+
+        for hunk in &hunks {
+            let patch = hunk.to_patch();
+            for line in patch.lines() {
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    lines_added += 1;
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    lines_removed += 1;
+                }
+            }
+            // Count unique files from diff headers
+            for line in patch.lines() {
+                if let Some(path) = line.strip_prefix("+++ b/") {
+                    if !files.contains(&path.to_string()) {
+                        files.push(path.to_string());
                     }
                 }
             }
         }
-        files
+
+        let diff_stats = DiffStats {
+            lines_added,
+            lines_removed,
+            files_changed: files.len(),
+        };
+
+        Ok((diff_content, diff_stats))
     }
 
-    fn calculate_aggregates(
+    pub fn calculate_aggregates(
         &self,
         assessments: &[CommitAssessment],
     ) -> HashMap<CriterionId, AggregateScore> {
@@ -228,7 +345,7 @@ impl AssessmentEngine {
                     ca.criterion_scores
                         .iter()
                         .find(|s| s.criterion_id == def.id)
-                        .map(|s| s.level as f32)
+                        .map(|s| s.weighted_score)
                 })
                 .collect();
 
@@ -270,6 +387,6 @@ mod tests {
     #[test]
     fn criterion_id_all() {
         let all = CriterionId::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 4);
     }
 }

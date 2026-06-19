@@ -6,7 +6,8 @@ use log::{error, info, warn};
 use crate::assessment::{self, AssessmentEngine, CriterionId};
 use crate::cancel;
 use crate::cli::{
-    ApplyArgs, AssessArgs, Command, CommitRange, CompareArgs, OutputFormat, PlanArgs, RewordArgs,
+    ApplyArgs, AssessArgs, AssessCommand, Command, CommitRange, CompareArgs,
+    ExportTrainingDataArgs, ExtractArgs, OutputFormat, PlanArgs, RewordArgs, TrainingDataFormat,
 };
 use crate::editor::{Editor, EditorError};
 use crate::features::Feature;
@@ -287,7 +288,8 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             short_sha(range.head())
         );
 
-        let planner = Planner::new(&self.git, self.strategies.clone());
+        let planner = Planner::new(&self.git, self.strategies.clone())
+            .with_llm_client(self.llm_config.create_client());
         let source_commits = planner.read_source_commits(&range.base, range.head())?;
         info!("Found {} commits", source_commits.len());
 
@@ -488,24 +490,26 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
     }
 
     fn handle_assess(&mut self, opts: AssessArgs) -> Result<(), AppError> {
-        // Resolve commit range
-        let range = CommitRange::resolve(opts.range.as_ref(), opts.base.as_deref(), &self.git)?;
+        use std::collections::HashSet;
+        use std::io::{BufRead, BufReader, Write};
 
-        info!(
-            "Assessing commits {}..{}",
-            short_sha(&range.base),
-            short_sha(range.head())
-        );
+        use crate::export::{AssessmentLabel, LabeledCommit};
+        use crate::extract::ExtractedCommit;
 
-        // Read commits
-        let commits = self.git.read_commits(&range.base, range.head())?;
-        if commits.is_empty() {
-            return Err(AppError::User("No commits found in range".to_string()));
+        // Dispatch subcommands
+        match &opts.subcommand {
+            Some(AssessCommand::Extract(extract_opts)) => {
+                return self.handle_extract(extract_opts.clone());
+            }
+            Some(AssessCommand::Export(export_opts)) => {
+                return self.handle_export_training_data(export_opts.clone());
+            }
+            None => {}
         }
 
-        info!("Found {} commits to assess", commits.len());
+        let from_file = opts.from_file.is_some();
 
-        // Parse criteria from args or use all
+        // Parse criteria — default depends on mode
         let criterion_ids = match &opts.criteria {
             Some(names) => {
                 let mut ids = Vec::new();
@@ -515,27 +519,224 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 }
                 ids
             }
+            None if from_file => vec![CriterionId::MessageQuality],
             None => CriterionId::all().to_vec(),
         };
 
-        // Create assessment engine with parallelism
+        // Build ExtractedCommit records from either source
+        let (records, base_sha, head_sha) = if let Some(input_path) = &opts.from_file {
+            // Load already-labeled hashes for resumability
+            let mut done_hashes = HashSet::new();
+            if let Some(output_path) = &opts.output {
+                if output_path.exists() {
+                    let reader = BufReader::new(
+                        std::fs::File::open(output_path)
+                            .map_err(|e| AppError::User(format!("Failed to open output: {}", e)))?,
+                    );
+                    for line in reader.lines() {
+                        let line =
+                            line.map_err(|e| AppError::User(format!("Read error: {}", e)))?;
+                        if let Ok(labeled) = serde_json::from_str::<LabeledCommit>(&line) {
+                            done_hashes.insert(labeled.commit.hash.clone());
+                        }
+                    }
+                    if !done_hashes.is_empty() {
+                        info!("Resuming: {} commits already labeled", done_hashes.len());
+                    }
+                }
+            }
+
+            let reader = BufReader::new(
+                std::fs::File::open(input_path)
+                    .map_err(|e| AppError::User(format!("Failed to open input: {}", e)))?,
+            );
+            let mut records = Vec::new();
+            for (i, line) in reader.lines().enumerate() {
+                let line = line.map_err(|e| AppError::User(format!("Read error: {}", e)))?;
+                let record: ExtractedCommit = serde_json::from_str(&line)
+                    .map_err(|e| {
+                        AppError::User(format!("Parse error on line {}: {}", i + 1, e))
+                    })?;
+                if !done_hashes.contains(&record.hash) {
+                    records.push(record);
+                }
+            }
+            if records.is_empty() {
+                info!("All commits already assessed");
+                return Ok(());
+            }
+            info!(
+                "Assessing {} commits from {}",
+                records.len(),
+                input_path.display()
+            );
+            let first = records.first().map(|r| r.hash.clone()).unwrap_or_default();
+            let last = records.last().map(|r| r.hash.clone()).unwrap_or_default();
+            (records, first, last)
+        } else {
+            let range =
+                CommitRange::resolve(opts.range.as_ref(), opts.base.as_deref(), &self.git)?;
+            info!(
+                "Assessing commits {}..{}",
+                short_sha(&range.base),
+                short_sha(range.head())
+            );
+
+            let commits = self.git.read_commits(&range.base, range.head())?;
+            if commits.is_empty() {
+                return Err(AppError::User("No commits found in range".to_string()));
+            }
+            info!("Found {} commits to assess", commits.len());
+
+            let base_sha = range.base.clone();
+            let head_sha = range.head().to_string();
+
+            let mut records = Vec::new();
+            for commit in &commits {
+                let hunks = self
+                    .git
+                    .read_hunks(&commit.sha, 0)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+                let diff = hunks
+                    .iter()
+                    .map(|h| h.to_patch())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let files_changed = self
+                    .git
+                    .get_files_changed_in_commit(&commit.sha)
+                    .unwrap_or_default();
+
+                let mut lines_added = 0usize;
+                let mut lines_removed = 0usize;
+                for hunk in &hunks {
+                    for line in &hunk.lines {
+                        match line {
+                            crate::models::DiffLine::Added(_) => lines_added += 1,
+                            crate::models::DiffLine::Removed(_) => lines_removed += 1,
+                            crate::models::DiffLine::Context(_) => {}
+                        }
+                    }
+                }
+
+                let body = if commit.message.long.len() > commit.message.short.len() {
+                    commit.message.long[commit.message.short.len()..]
+                        .trim()
+                        .to_string()
+                } else {
+                    String::new()
+                };
+
+                records.push(ExtractedCommit {
+                    hash: commit.sha.clone(),
+                    subject: commit.message.short.clone(),
+                    body,
+                    author_name: String::new(),
+                    author_date: String::new(),
+                    diff,
+                    diff_stat: crate::assessment::DiffStats {
+                        files_changed: files_changed.len(),
+                        lines_added,
+                        lines_removed,
+                    },
+                    files_changed,
+                    diff_truncated: false,
+                });
+            }
+            (records, base_sha, head_sha)
+        };
+
+        // Assess in batches, writing results incrementally
         let client = self.llm_config.create_client();
-        let engine = AssessmentEngine::new(client, &criterion_ids).with_parallelism(opts.parallel);
+        let engine =
+            AssessmentEngine::new(client, &criterion_ids).with_parallelism(opts.parallel);
 
-        // Run assessment
-        let result = engine.assess_range(&self.git, &range.base, range.head(), &commits)?;
+        let batch_size = opts.parallel.max(1) * 2;
+        let total = records.len();
+        let mut all_assessments = Vec::with_capacity(total);
 
-        // Handle comparison if requested
+        let mut writer: Option<std::fs::File> = if let Some(output_path) = &opts.output {
+            Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(output_path)
+                    .map_err(|e| AppError::User(format!("Failed to open output: {}", e)))?,
+            )
+        } else {
+            None
+        };
+
+        for chunk_start in (0..total).step_by(batch_size) {
+            let chunk_end = (chunk_start + batch_size).min(total);
+            let batch = &records[chunk_start..chunk_end];
+
+            info!("[{}/{}] Assessing batch...", chunk_start + 1, total);
+
+            let batch_assessments = engine
+                .assess_commits(batch)
+                .map_err(|e| AppError::User(e.to_string()))?;
+
+            // Write this batch immediately
+            if let Some(ref mut w) = writer {
+                for (record, assessment) in batch.iter().zip(&batch_assessments) {
+                    let primary = assessment.criterion_scores.first();
+                    let labeled = LabeledCommit {
+                        commit: record.clone(),
+                        assessment: AssessmentLabel {
+                            level: primary.map(|s| s.level).unwrap_or(0),
+                            rationale: primary.map(|s| s.rationale.clone()).unwrap_or_default(),
+                            evidence: primary.map(|s| s.evidence.clone()).unwrap_or_default(),
+                            suggestions: primary.map(|s| s.suggestions.clone()).unwrap_or_default(),
+                        },
+                    };
+                    let json = serde_json::to_string(&labeled)
+                        .map_err(|e| AppError::User(format!("Serialization error: {}", e)))?;
+                    writeln!(w, "{}", json)
+                        .map_err(|e| AppError::User(format!("Write error: {}", e)))?;
+                }
+                w.flush()
+                    .map_err(|e| AppError::User(format!("Flush error: {}", e)))?;
+            }
+
+            all_assessments.extend(batch_assessments);
+        }
+
+        let commit_assessments = all_assessments;
+        if let Some(output_path) = &opts.output {
+            info!("Labeled {} commits to {}", total, output_path.display());
+        }
+
+        // Build RangeAssessment for display/save
+        let aggregate_scores = engine.calculate_aggregates(&commit_assessments);
+        let overall_score = if commit_assessments.is_empty() {
+            0.0
+        } else {
+            commit_assessments
+                .iter()
+                .map(|ca| ca.overall_score)
+                .sum::<f32>()
+                / commit_assessments.len() as f32
+        };
+        let result = assessment::types::RangeAssessment {
+            base_sha,
+            head_sha,
+            assessed_at: chrono::Utc::now().to_rfc3339(),
+            commit_assessments,
+            aggregate_scores,
+            overall_score,
+            range_observations: Vec::new(),
+        };
+
+        // Display
         if let Some(compare_path) = &opts.compare {
             let previous = assessment::load_assessment(compare_path)
                 .map_err(|e| AppError::User(format!("Failed to load comparison: {}", e)))?;
-
             let comparison = assessment::compare_assessments(previous, result.clone());
             let output =
                 assessment::report::format_comparison(&comparison, convert_format(opts.format));
             println!("{}", output);
         } else {
-            // Format and print assessment
             let output = assessment::report::format_assessment(
                 &result,
                 convert_format(opts.format),
@@ -544,7 +745,6 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
             println!("{}", output);
         }
 
-        // Save if requested
         if let Some(save_path) = opts.save {
             let path = assessment::save_assessment(&result, save_path.as_deref())
                 .map_err(|e| AppError::User(format!("Failed to save assessment: {}", e)))?;
@@ -697,6 +897,88 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
                 short_sha(&range.base)
             );
         }
+
+        Ok(())
+    }
+
+    fn handle_extract(&mut self, opts: ExtractArgs) -> Result<(), AppError> {
+        use crate::extract::{self, ExtractConfig};
+
+        let range = CommitRange::resolve(opts.range.as_ref(), opts.base.as_deref(), &self.git)?;
+
+        info!(
+            "Extracting commits {}..{}",
+            short_sha(&range.base),
+            short_sha(range.head())
+        );
+
+        let config = ExtractConfig {
+            max_diff_size: opts.max_diff_size,
+            max_files: opts.max_files,
+        };
+
+        let mut writer: Box<dyn std::io::Write> = if let Some(path) = &opts.output {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AppError::User(format!("Failed to create directory: {}", e)))?;
+            }
+            Box::new(
+                std::fs::File::create(path)
+                    .map_err(|e| AppError::User(format!("Failed to create output file: {}", e)))?,
+            )
+        } else {
+            Box::new(std::io::stdout())
+        };
+
+        let count = extract::extract_range(&self.git, &range.base, range.head(), &config, &mut writer)
+            .map_err(|e| AppError::User(e.to_string()))?;
+
+        info!("Extracted {} commits", count);
+        if let Some(path) = &opts.output {
+            info!("Written to {}", path.display());
+        }
+
+        Ok(())
+    }
+
+    fn handle_export_training_data(&self, opts: ExportTrainingDataArgs) -> Result<(), AppError> {
+        use crate::export::{self, ExportConfig};
+
+        let config = ExportConfig {
+            min_level: opts.min_level,
+            output_dir: opts.output_dir.clone(),
+        };
+
+        let client = self.llm_config.create_client();
+        let mut sft_count = 0;
+        let mut dpo_count = 0;
+        let mut assessment_count = 0;
+
+        match opts.format {
+            TrainingDataFormat::Sft => {
+                sft_count = export::export_sft(&opts.input, &config)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+            }
+            TrainingDataFormat::Assessment => {
+                assessment_count = export::export_assessment(&opts.input, &config)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+            }
+            TrainingDataFormat::Dpo => {
+                dpo_count = export::export_dpo(&opts.input, &config, client)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+            }
+            TrainingDataFormat::All => {
+                sft_count = export::export_sft(&opts.input, &config)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+                dpo_count = export::export_dpo(&opts.input, &config, client)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+                assessment_count = export::export_assessment(&opts.input, &config)
+                    .map_err(|e| AppError::User(e.to_string()))?;
+            }
+        }
+
+        export::write_metadata(&config, sft_count, dpo_count, assessment_count)
+            .map_err(|e| AppError::User(e.to_string()))?;
 
         Ok(())
     }

@@ -5,6 +5,7 @@ use std::thread;
 
 use log::debug;
 
+use crate::assessment::criteria::message;
 use crate::llm::LlmClient;
 use crate::models::{
     CommitDescription, Hunk, HunkId, PlannedChange, PlannedCommit, PlannedCommitId,
@@ -254,32 +255,35 @@ fn build_commit_prompt(
         prompt.push_str(&format!("```diff\n{}\n```\n", diff_preview));
     }
 
-    prompt.push_str(
+    prompt.push_str(&format!(
         r#"
+## Commit Message Quality
+
+{guidelines}
+
 Guidelines:
-- Short message: 50 chars or less, imperative mood, explains WHY not just WHAT
-- Long message: Explains the motivation and context, not just a list of changes
 - If changes are unrelated, set should_split=true and provide split_groups
 
 Respond with ONLY JSON:
-{
+{{
   "short_message": "Short commit message",
   "long_message": "Longer explanation of why this change was made",
   "should_split": false,
   "split_groups": null
-}
+}}
 
 Or if splitting:
-{
+{{
   "short_message": "",
   "long_message": "",
   "should_split": true,
   "split_groups": [
-    {"hunk_ids": [0, 1], "short_message": "First commit", "long_message": "Details"},
-    {"hunk_ids": [2], "short_message": "Second commit", "long_message": "Details"}
+    {{"hunk_ids": [0, 1], "short_message": "First commit", "long_message": "Details"}},
+    {{"hunk_ids": [2], "short_message": "Second commit", "long_message": "Details"}}
   ]
-}"#,
-    );
+}}"#,
+        guidelines = message::guidelines(),
+    ));
 
     prompt
 }

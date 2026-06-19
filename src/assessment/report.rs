@@ -441,7 +441,7 @@ mod tests {
                 commit_sha: "abc12345".to_string(),
                 commit_message: "Test commit".to_string(),
                 criterion_scores: vec![CriterionScore {
-                    criterion_id: CriterionId::Atomicity,
+                    criterion_id: CriterionId::Coherence,
                     level: 4,
                     weighted_score: 4.0,
                     rationale: "Good".to_string(),
