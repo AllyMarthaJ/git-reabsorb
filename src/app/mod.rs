@@ -166,9 +166,9 @@ impl<G: GitOps, E: Editor, P: PlanStore> App<G, E, P> {
     fn handle_apply(&mut self, opts: ApplyArgs) -> Result<(), AppError> {
         let mut plan = self.plan_store.load()?;
 
-        // Let the strategy handle apply if it wants to (e.g., absorb calls git-absorb directly)
+        // Let the strategy handle apply if it wants to (e.g., absorb rewrites the branch itself)
         let reorganizer = self.strategies.create(plan.strategy);
-        let result = reorganizer.apply(&self.git, &[])?;
+        let result = reorganizer.apply(&self.git, &plan.base_sha)?;
         if result == ApplyResult::Handled {
             self.plan_store.delete()?;
             info!("Strategy '{:?}' handled apply directly.", plan.strategy);

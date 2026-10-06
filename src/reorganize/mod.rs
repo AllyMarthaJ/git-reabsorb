@@ -73,12 +73,9 @@ pub trait Reorganizer {
         self.plan(source_commits, hunks)
     }
 
-    /// Apply the strategy. Returns whether to continue with default execution.
-    fn apply(
-        &self,
-        _git: &dyn GitOps,
-        _extra_args: &[String],
-    ) -> Result<ApplyResult, ReorganizeError> {
+    /// Apply the strategy over `base..HEAD`. Returns whether to continue with
+    /// default execution.
+    fn apply(&self, _git: &dyn GitOps, _base: &str) -> Result<ApplyResult, ReorganizeError> {
         Ok(ApplyResult::Continue)
     }
 

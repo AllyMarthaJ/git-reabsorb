@@ -19,8 +19,6 @@ pub enum Feature {
     /// Attempt to fix validation errors (unassigned/duplicate hunks) with targeted prompts
     /// instead of retrying from scratch.
     AttemptValidationFix,
-    /// Use gitabsorb to absorb existing commits.
-    Absorb,
     /// Use file-based I/O for LLM prompts to reduce token usage and handle larger patches.
     /// Writes hunks to a temp file and instructs LLM to read from it.
     FileBasedLlmIo,
