@@ -1,3 +1,4 @@
+pub mod absorb;
 pub mod app;
 pub mod assessment;
 pub mod cancel;

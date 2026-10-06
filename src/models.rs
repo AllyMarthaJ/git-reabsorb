@@ -21,7 +21,7 @@ pub enum Strategy {
     Llm,
     /// Multi-phase hierarchical reorganization (scales to large changes)
     Hierarchical,
-    /// Use git-absorb to fixup commits
+    /// Fold the working tree's changes into the branch commits that last touched their lines
     Absorb,
 }
 
